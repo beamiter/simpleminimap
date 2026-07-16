@@ -1,0 +1,164 @@
+*simpleminimap.txt*        Vim9 + Rust right-side code minimap
+
+==============================================================================
+CONTENTS                                                   *simpleminimap-contents*
+
+  1. Introduction .............................. |simpleminimap-introduction|
+  2. Requirements .............................. |simpleminimap-requirements|
+  3. Commands .................................. |simpleminimap-commands|
+  4. Mappings .................................. |simpleminimap-mappings|
+  5. Options ................................... |simpleminimap-options|
+  6. Highlights ................................ |simpleminimap-highlights|
+  7. Design .................................... |simpleminimap-design|
+  8. Troubleshooting ........................... |simpleminimap-troubleshooting|
+
+==============================================================================
+1. INTRODUCTION                                         *simpleminimap-introduction*
+
+SimpleMinimap opens a fixed-width window at the far right of the current tab
+and renders a compact overview of the active normal buffer.  Vim9 script owns
+window state, events, highlighting and navigation.  A long-running Rust job
+renders bounded line samples into Braille, block or ASCII density glyphs.
+
+The plugin supports Vim 9 only.  It does not support Neovim.
+
+==============================================================================
+2. REQUIREMENTS                                         *simpleminimap-requirements*
+
+- Vim 9.0 or newer.
+- Vim compiled with +job and +channel.
+- Rust 1.70 or newer and Cargo when building from source.
+- UTF-8 is recommended for the default Braille renderer.
+
+Run: >
+  :echo has('job')
+  :echo has('channel')
+<
+Both values must be 1.
+
+==============================================================================
+3. COMMANDS                                                 *simpleminimap-commands*
+
+:SimpleMinimap                                      *:SimpleMinimap*
+        Toggle the minimap for the current tab.
+
+:SimpleMinimapOpen                                  *:SimpleMinimapOpen*
+        Open the minimap.  Does nothing when this tab already owns one.
+
+:SimpleMinimapClose                                 *:SimpleMinimapClose*
+        Close the minimap in the current tab.
+
+:SimpleMinimapRefresh                               *:SimpleMinimapRefresh*
+        Render immediately, bypassing the normal edit debounce.
+
+:SimpleMinimapHealth                                *:SimpleMinimapHealth*
+        Show Vim feature, daemon path and protocol state.
+
+:SimpleMinimapDebug                                 *:SimpleMinimapDebug*
+        Echo the complete internal state dictionary.
+
+==============================================================================
+4. MAPPINGS                                                 *simpleminimap-mappings*
+
+The plugin exposes:                              *<Plug>(simpleminimap-toggle)*
+
+  <Plug>(simpleminimap-toggle)
+
+When |g:simpleminimap_set_default_mapping| is enabled and <Leader>m is free,
+the plugin maps <Leader>m to that <Plug> target.
+
+Inside the minimap buffer:
+
+  <CR>        Jump to the midpoint of the represented source range.
+  <LeftMouse> Jump to the clicked represented source range.
+  r           Refresh immediately.
+  q           Close the minimap.
+
+==============================================================================
+5. OPTIONS                                                   *simpleminimap-options*
+
+All options must be set before the plugin is loaded.
+
+*g:simpleminimap_width*
+        Number, default 18.  Minimap width, clamped to 6..80.
+
+*g:simpleminimap_max_columns*
+        Number, default 120.  Maximum logical source columns analyzed per
+        sample, clamped to 20..1000.
+
+*g:simpleminimap_debounce*
+        Number, default 80.  Delay in milliseconds after edits, clamped to
+        0..2000.  Zero renders synchronously from the Vim event callback, while
+        the actual compression still runs in the Rust job.
+
+*g:simpleminimap_render_style*
+        String, default "braille".  Accepted values are "braille", "blocks"
+        and "ascii".  Unknown values fall back to "braille".
+
+*g:simpleminimap_daemon_path*
+        String, default empty.  Absolute path to simpleminimap-daemon.  With an
+        empty value the plugin searches its lib/, target/release/,
+        target/debug/, runtimepath lib/ directories and $PATH.
+
+*g:simpleminimap_show_statusline*
+        Boolean number, default 1.  Show a small SimpleMinimap statusline.
+
+*g:simpleminimap_auto_close*
+        Boolean number, default 0.  Close the minimap when its tab has no normal
+        editable window.  With zero, the minimap remains and shows a message.
+
+*g:simpleminimap_set_default_mapping*
+        Boolean number, default 1.  Install <Leader>m only when it is unused.
+
+*g:simpleminimap_debug*
+        Boolean number, default 0.  Emit diagnostic messages to |:messages|.
+
+==============================================================================
+6. HIGHLIGHTS                                             *simpleminimap-highlights*
+
+*SimpleMinimapNormal*     Minimap text.  Defaults to Comment.
+*SimpleMinimapViewport*   Source viewport range.  Defaults to Visual.
+*SimpleMinimapCursor*     Source cursor range.  Defaults to Search.
+*SimpleMinimapTitle*      Statusline title.  Defaults to Title.
+
+The defaults are recreated after |ColorScheme|.  Define the groups in your own
+ColorScheme autocommand to override them.
+
+==============================================================================
+7. DESIGN                                                     *simpleminimap-design*
+
+One session is maintained per tab.  The session follows the most recently
+entered normal window in that tab.  TextChanged, TextChangedI, BufWritePost,
+WinResized, WinScrolled and tabstop changes schedule an update.
+
+The source is divided into at most one group per minimap screen row.  A group
+contains four representative source lines.  The Rust daemon maps non-whitespace
+content to a 2-by-4 Braille cell or an equivalent density character.  Only
+bounded samples are transferred, so protocol size is controlled by minimap
+height and g:simpleminimap_max_columns rather than total file length.
+
+Every request has a monotonically increasing ID.  Vim applies a response only
+when it is still the newest request for that session.
+
+==============================================================================
+8. TROUBLESHOOTING                                   *simpleminimap-troubleshooting*
+
+"daemon not found"
+        Run install.sh or install.ps1 in the plugin root, or set
+        g:simpleminimap_daemon_path to an executable built for this machine.
+
+Blank or missing Braille glyphs
+        Set: >
+          let g:simpleminimap_render_style = 'blocks'
+<       Use "ascii" for terminals without Unicode block characters.
+
+The minimap does not follow a window
+        Only normal buffers with an empty 'buftype' are followed.  Help,
+        terminal, quickfix and plugin scratch windows are intentionally skipped.
+
+Inspect state
+        Run |:SimpleMinimapHealth| and |:SimpleMinimapDebug|.  Enable
+        g:simpleminimap_debug and inspect |:messages| for job diagnostics.
+
+==============================================================================
+vim:tw=78:ts=8:noet:ft=help:norl:

@@ -1,0 +1,33 @@
+name: ci
+
+on:
+  push:
+  pull_request:
+
+jobs:
+  test:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@stable
+        with:
+          components: rustfmt, clippy
+      - name: Install Vim
+        run: |
+          sudo apt-get update
+          sudo apt-get install --yes vim-nox
+      - name: Format
+        run: cargo fmt --check
+      - name: Lint
+        run: cargo clippy --all-targets -- -D warnings
+      - name: Rust tests
+        run: cargo test --all-targets
+      - name: Vim integration with mock daemon
+        run: vim -Nu NONE -n -es -S tests/vim_integration.vim
+      - name: Vim lifecycle tests
+        run: vim -Nu NONE -n -es -S tests/vim_lifecycle.vim
+      - name: Vim integration with Rust daemon
+        run: |
+          cargo build --release --locked
+          SIMPLEMINIMAP_TEST_DAEMON="$PWD/target/release/simpleminimap-daemon" \
+            vim -Nu NONE -n -es -S tests/vim_integration.vim

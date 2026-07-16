@@ -1,0 +1,4 @@
+/target/
+/lib/simpleminimap-daemon
+/lib/simpleminimap-daemon.exe
+*.log

@@ -1,0 +1,19 @@
+[package]
+name = "simpleminimap"
+version = "0.1.0"
+edition = "2021"
+rust-version = "1.70"
+description = "A tiny asynchronous minimap renderer for Vim 9"
+license = "MIT"
+repository = "https://github.com/beamiter/simpleminimap"
+readme = "README.md"
+
+[[bin]]
+name = "simpleminimap-daemon"
+path = "src/main.rs"
+
+[profile.release]
+opt-level = 3
+lto = true
+codegen-units = 1
+strip = true
