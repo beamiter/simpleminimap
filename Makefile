@@ -1,4 +1,4 @@
-.PHONY: build install fmt lint test test-rust test-vim test-vim-lifecycle test-vim-real clean
+.PHONY: build install fmt lint test test-rust test-daemon test-vim test-vim-lifecycle test-vim-real clean
 
 build:
 	cargo build --release --locked
@@ -12,10 +12,15 @@ fmt:
 lint:
 	cargo clippy --all-targets -- -D warnings
 
-test: fmt lint test-rust test-vim test-vim-lifecycle test-vim-real
+test: fmt lint test-rust test-daemon test-vim test-vim-lifecycle test-vim-real
 
 test-rust:
 	cargo test --all-targets
+
+test-daemon: build
+	./target/release/simpleminimap-daemon --self-test
+	./target/release/simpleminimap-daemon --help >/dev/null
+	./target/release/simpleminimap-daemon --version >/dev/null
 
 test-vim:
 	vim -Nu NONE -n -es -S tests/vim_integration.vim

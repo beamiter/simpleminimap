@@ -2,6 +2,7 @@ vim9script
 
 const PROTOCOL_VERSION = 1
 const MIN_RENDER_HEIGHT = 1
+const MAX_BACKEND_RESTARTS = 3
 var plugin_root = fnamemodify(expand('<sfile>:p'), ':h:h')
 
 # key (minimap window ID as string) -> session dictionary.
@@ -12,6 +13,10 @@ var backend_job: any = v:null
 var backend_path = ''
 var backend_ready = false
 var backend_error = ''
+var backend_restart_timer = 0
+var backend_restart_attempts = 0
+var backend_stopping = false
+var backend_restart_requested = false
 var next_request_id = 0
 var internal_change = false
 
@@ -49,7 +54,12 @@ def IsEligibleSourceWindow(winid: number): bool
     return false
   endif
   var buftype = getbufvar(info.bufnr, '&buftype')
-  return type(buftype) == v:t_string && buftype ==# ''
+  if type(buftype) != v:t_string || buftype !=# ''
+    return false
+  endif
+  var ignored = get(g:, 'simpleminimap_ignore_filetypes', [])
+  var filetype = getbufvar(info.bufnr, '&filetype')
+  return type(ignored) != v:t_list || index(ignored, filetype) < 0
 enddef
 
 
@@ -180,6 +190,25 @@ def BackendRunning(): bool
 enddef
 
 
+def RejectResponse(request_key: string, message: string)
+  backend_error = message
+  var key = ''
+  if has_key(requests, request_key)
+    key = requests->remove(request_key)
+  endif
+  if has_key(incoming, request_key)
+    incoming->remove(request_key)
+  endif
+  if key !=# '' && has_key(sessions, key)
+    var session = sessions[key]
+    if string(get(session, 'request_id', 0)) ==# request_key
+      RenderMessage(key, ['SimpleMinimap backend error', message])
+    endif
+  endif
+  Log('rejected backend response ' .. request_key .. ': ' .. message)
+enddef
+
+
 def BackendOut(_channel: channel, message: string)
   if message ==# ''
     return
@@ -190,11 +219,17 @@ def BackendOut(_channel: channel, message: string)
   endif
 
   if fields[0] ==# 'READY'
-    backend_ready = len(fields) > 1 && str2nr(fields[1]) == PROTOCOL_VERSION
+    backend_ready = len(fields) == 2 && str2nr(fields[1]) == PROTOCOL_VERSION
     if !backend_ready
       backend_error = 'backend protocol version mismatch'
+      for key in keys(sessions)
+        RenderMessage(key, ['SimpleMinimap backend error', backend_error])
+      endfor
     else
       backend_error = ''
+      for key in keys(sessions)
+        Schedule(key, 0)
+      endfor
     endif
     Log('backend ready: ' .. message)
     return
@@ -207,48 +242,76 @@ def BackendOut(_channel: channel, message: string)
   if fields[0] ==# 'X'
     var id = len(fields) > 1 ? str2nr(fields[1]) : 0
     var error = len(fields) > 2 ? DecodeField(fields[2]) : 'unknown backend error'
-    backend_error = error
     Log(printf('backend error for request %d: %s', id, error))
-    if has_key(requests, string(id))
-      var key = requests[string(id)]
-      if has_key(sessions, key)
-        RenderMessage(key, ['SimpleMinimap backend error', error])
-      endif
-      requests->remove(string(id))
-    endif
-    if has_key(incoming, string(id))
-      incoming->remove(string(id))
-    endif
+    RejectResponse(string(id), error)
     return
   endif
 
-  if len(fields) < 2
+  if len(fields) < 2 || fields[1] !~# '^\d\+$'
     return
   endif
   var request_id = str2nr(fields[1])
   var request_key = string(request_id)
+  if !has_key(requests, request_key)
+    return
+  endif
 
   if fields[0] ==# 'B'
+    if has_key(incoming, request_key)
+      RejectResponse(request_key, 'duplicate response header')
+      return
+    endif
+    if len(fields) != 4 || fields[2] !~# '^\d\+$' || fields[3] !~# '^\d\+$'
+      RejectResponse(request_key, 'malformed response header')
+      return
+    endif
+    var source_lines = str2nr(fields[2])
+    var expected = str2nr(fields[3])
+    var session_key = requests[request_key]
+    var dimensions = has_key(sessions, session_key) ? WindowDimensions(sessions[session_key].winid) : [0, 0]
+    if source_lines <= 0 || expected <= 0 || expected > 2000
+        || dimensions[1] <= 0 || expected > dimensions[1]
+      RejectResponse(request_key, 'invalid response dimensions')
+      return
+    endif
     incoming[request_key] = {
-      source_lines: len(fields) > 2 ? str2nr(fields[2]) : 0,
-      expected: len(fields) > 3 ? str2nr(fields[3]) : 0,
+      source_lines: source_lines,
+      expected: expected,
       rows: [],
     }
   elseif fields[0] ==# 'R'
-    if len(fields) < 5 || !has_key(incoming, request_key)
+    if len(fields) != 5 || !has_key(incoming, request_key)
+      RejectResponse(request_key, 'row without a valid response header')
       return
     endif
-    incoming[request_key].rows->add({
-      start: str2nr(fields[2]),
-      end: str2nr(fields[3]),
-      text: DecodeField(fields[4]),
-    })
+    if fields[2] !~# '^\d\+$' || fields[3] !~# '^\d\+$'
+      RejectResponse(request_key, 'malformed response row range')
+      return
+    endif
+    var response = incoming[request_key]
+    var start_line = str2nr(fields[2])
+    var end_line = str2nr(fields[3])
+    var expected_start = empty(response.rows) ? 1 : response.rows[-1].end + 1
+    var text = DecodeField(fields[4])
+    if start_line != expected_start || end_line < start_line || end_line > response.source_lines
+      RejectResponse(request_key, 'non-contiguous response row range')
+      return
+    endif
+    if len(response.rows) >= response.expected || strchars(text) > 256
+      RejectResponse(request_key, 'response row exceeds declared limits')
+      return
+    endif
+    response.rows->add({start: start_line, end: end_line, text: text})
   elseif fields[0] ==# 'E'
-    if !has_key(incoming, request_key)
+    if len(fields) != 2 || !has_key(incoming, request_key)
+      RejectResponse(request_key, 'render end without a valid response')
       return
     endif
     var response = incoming->remove(request_key)
-    if !has_key(requests, request_key)
+    if len(response.rows) != response.expected
+        || empty(response.rows)
+        || response.rows[-1].end != response.source_lines
+      RejectResponse(request_key, 'incomplete backend response')
       return
     endif
     var session_key = requests->remove(request_key)
@@ -259,11 +322,9 @@ def BackendOut(_channel: channel, message: string)
     if get(session, 'request_id', 0) != request_id
       return
     endif
-    if len(response.rows) != response.expected
-      RenderMessage(session_key, ['SimpleMinimap incomplete response'])
-      return
-    endif
     ApplyRows(session_key, response.rows, response.source_lines)
+  else
+    RejectResponse(request_key, 'unknown backend response command')
   endif
 enddef
 
@@ -277,21 +338,70 @@ def BackendErr(_channel: channel, message: string)
 enddef
 
 
-def BackendExit(_job: job, status: number)
+def BackendRestartTimer(_timer: number)
+  backend_restart_timer = 0
+  if BackendRunning()
+    backend_restart_timer = timer_start(50, BackendRestartTimer)
+    return
+  endif
+  for key in keys(sessions)
+    Schedule(key, 0)
+  endfor
+enddef
+
+
+def ScheduleBackendRestart(delay: number)
+  if backend_restart_timer > 0
+    timer_stop(backend_restart_timer)
+  endif
+  backend_restart_timer = timer_start(max([0, delay]), BackendRestartTimer)
+enddef
+
+
+def BackendExit(exited_job: job, status: number)
+  if type(backend_job) == v:t_job
+      && get(job_info(exited_job), 'process', -1) != get(job_info(backend_job), 'process', -2)
+    Log('ignored exit callback from a superseded backend job')
+    return
+  endif
+  var explicitly_requested = backend_restart_requested
+  var unexpected = !backend_stopping
+  backend_job = v:null
   backend_ready = false
   backend_error = printf('backend exited with status %d', status)
   requests = {}
   incoming = {}
+  backend_stopping = false
+  backend_restart_requested = false
   Log(backend_error)
-  for key in keys(sessions)
-    RenderMessage(key, ['SimpleMinimap backend stopped', backend_error])
-  endfor
+  var should_restart = explicitly_requested
+  if unexpected && get(g:, 'simpleminimap_auto_restart', 1)
+      && backend_restart_attempts < MAX_BACKEND_RESTARTS
+    backend_restart_attempts += 1
+    should_restart = true
+  endif
+  if should_restart && !empty(sessions)
+    var delays = [100, 350, 1000]
+    var delay_index = Clamp(backend_restart_attempts - 1, 0, len(delays) - 1)
+    for key in keys(sessions)
+      RenderMessage(key, ['SimpleMinimap', 'restarting backend…'])
+    endfor
+    ScheduleBackendRestart(explicitly_requested ? 0 : delays[delay_index])
+  else
+    for key in keys(sessions)
+      RenderMessage(key, ['SimpleMinimap backend stopped', backend_error])
+    endfor
+  endif
 enddef
 
 
 def StartBackend(): bool
   if BackendRunning()
     return true
+  endif
+  if backend_stopping
+    backend_error = 'backend is restarting'
+    return false
   endif
 
   backend_path = FindDaemon()
@@ -302,6 +412,8 @@ def StartBackend(): bool
   endif
 
   try
+    backend_ready = false
+    backend_error = ''
     backend_job = job_start([backend_path], {
       in_io: 'pipe',
       out_io: 'pipe',
@@ -318,6 +430,7 @@ def StartBackend(): bool
   catch
     backend_error = 'failed to start backend: ' .. v:exception
     backend_ready = false
+    backend_job = v:null
     return false
   endtry
 
@@ -328,6 +441,34 @@ def StartBackend(): bool
   endif
   Log('started backend: ' .. backend_path)
   return true
+enddef
+
+
+def StopBackend(restart: bool = false)
+  if backend_restart_timer > 0
+    timer_stop(backend_restart_timer)
+    backend_restart_timer = 0
+  endif
+  backend_restart_requested = restart
+  backend_stopping = true
+  backend_ready = false
+  requests = {}
+  incoming = {}
+  if BackendRunning()
+    try
+      job_stop(backend_job)
+    catch
+      backend_job = v:null
+      backend_stopping = false
+    endtry
+  else
+    backend_job = v:null
+    backend_stopping = false
+    backend_restart_requested = false
+    if restart && !empty(sessions)
+      ScheduleBackendRestart(0)
+    endif
+  endif
 enddef
 
 
@@ -393,6 +534,7 @@ def RenderMessage(key: string, message_lines: list<string>)
   if !has_key(sessions, key)
     return
   endif
+  ForgetRequestsForSession(key)
   var session = sessions[key]
   var dimensions = WindowDimensions(session.winid)
   if dimensions[0] <= 0 || dimensions[1] <= 0
@@ -412,14 +554,84 @@ def RenderMessage(key: string, message_lines: list<string>)
 enddef
 
 
-def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_chars: number): list<string>
+def NormalizeDisplayCells(text: string, max_columns: number, tabstop: number): string
+  if text !~# '[^\x09\x20-\x7E]'
+    return text
+  endif
+  var output = ''
+  var logical_column = 0
+  var char_index = 0
+  var char_count = strchars(text)
+  while char_index < char_count && logical_column < max_columns
+    var ch = strcharpart(text, char_index, 1)
+    if ch ==# "\t"
+      output ..= ch
+      logical_column = min([max_columns, ((logical_column / tabstop) + 1) * tabstop])
+    else
+      var cell_width = strdisplaywidth(ch)
+      if cell_width > 0
+        cell_width = min([cell_width, max_columns - logical_column])
+        output ..= repeat(ch, cell_width)
+        logical_column += cell_width
+      endif
+    endif
+    char_index += 1
+  endwhile
+  return strcharpart(output, 0, max_columns)
+enddef
+
+
+def SampleText(bufnr: number, line_number: number, max_chars: number, tabstop: number): string
+  var text = getbufline(bufnr, line_number)
+  if empty(text)
+    return ''
+  endif
+  return NormalizeDisplayCells(strcharpart(text[0], 0, max_chars), max_chars, tabstop)
+enddef
+
+
+def InkScore(text: string): number
+  return strchars(substitute(text, '\s', '', 'g'))
+enddef
+
+
+def RepresentativeSample(bufnr: number, start_line: number, end_line: number, max_chars: number, tabstop: number): string
+  var midpoint = start_line + ((end_line - start_line) / 2)
+  if get(g:, 'simpleminimap_sampling', 'adaptive') !=# 'adaptive' || start_line == end_line
+    return SampleText(bufnr, midpoint, max_chars, tabstop)
+  endif
+
+  var candidates = [start_line, midpoint, end_line]
+  var best_text = ''
+  var best_score = -1
+  var best_distance = end_line - start_line + 1
+  var visited: dict<bool> = {}
+  for line_number in candidates
+    var candidate_key = string(line_number)
+    if has_key(visited, candidate_key)
+      continue
+    endif
+    visited[candidate_key] = true
+    var text = SampleText(bufnr, line_number, max_chars, tabstop)
+    var score = InkScore(text)
+    var distance = abs(line_number - midpoint)
+    if score > best_score || (score == best_score && distance < best_distance)
+      best_text = text
+      best_score = score
+      best_distance = distance
+    endif
+  endfor
+  return best_text
+enddef
+
+
+def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_chars: number, tabstop: number): list<string>
   var samples: list<string> = []
   var count = end_line - start_line + 1
   if count <= 4
     var line_number = start_line
     while line_number <= end_line
-      var text = getbufline(bufnr, line_number)
-      samples->add(empty(text) ? '' : strcharpart(text[0], 0, max_chars))
+      samples->add(SampleText(bufnr, line_number, max_chars, tabstop))
       line_number += 1
     endwhile
     while len(samples) < 4
@@ -429,10 +641,10 @@ def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_ch
   endif
 
   for sample_index in range(0, 3)
-    var offset = ((sample_index * 2 + 1) * count) / 8
-    var line_number = min([end_line, start_line + offset])
-    var text = getbufline(bufnr, line_number)
-    samples->add(empty(text) ? '' : strcharpart(text[0], 0, max_chars))
+    var bucket_start = start_line + ((sample_index * count) / 4)
+    var bucket_end = start_line + ((((sample_index + 1) * count) / 4) - 1)
+    bucket_end = min([end_line, max([bucket_start, bucket_end])])
+    samples->add(RepresentativeSample(bufnr, bucket_start, bucket_end, max_chars, tabstop))
   endfor
   return samples
 enddef
@@ -465,7 +677,7 @@ def BuildPayload(key: string, request_id: number): string
     var end_zero = (((row_index + 1) * source_lines) / row_count) - 1
     var start_line = start_zero + 1
     var end_line = max([start_line, end_zero + 1])
-    var samples = BuildSampleGroup(session.source_bufnr, start_line, end_line, max_chars)
+    var samples = BuildSampleGroup(session.source_bufnr, start_line, end_line, max_chars, tabstop)
     parts->add(printf("G\t%d\t%d\t%d\t%s\t%s\t%s\t%s",
       request_id, start_line, end_line,
       EncodeField(samples[0]), EncodeField(samples[1]), EncodeField(samples[2]), EncodeField(samples[3])))
@@ -489,13 +701,19 @@ def RenderSession(key: string)
     RenderMessage(key, ['SimpleMinimap', backend_error])
     return
   endif
+  if !backend_ready
+    RenderMessage(key, ['SimpleMinimap', backend_error ==# '' ? 'starting backend…' : backend_error])
+    return
+  endif
 
+  ForgetRequestsForSession(key)
   next_request_id += 1
   if next_request_id <= 0
     next_request_id = 1
   endif
   var request_id = next_request_id
   session.request_id = request_id
+  session.request_started = reltime()
   session.source_bufnr = WindowInfo(session.source_winid).bufnr
   var payload = BuildPayload(key, request_id)
   if payload ==# ''
@@ -539,24 +757,72 @@ def Schedule(key: string, delay: number = -1)
 enddef
 
 
-def ClearMatches(key: string)
+def DeleteMatch(key: string, field: string)
   if !has_key(sessions, key)
     return
   endif
   var session = sessions[key]
-  if !WindowExists(session.winid)
+  var match_id = get(session, field, -1)
+  if match_id > 0 && WindowExists(session.winid)
+    try
+      matchdelete(match_id, session.winid)
+    catch
+    endtry
+  endif
+  session[field] = -1
+enddef
+
+
+def ClearMatches(key: string)
+  if !has_key(sessions, key)
     return
   endif
-  for field in ['viewport_match', 'cursor_match']
-    var match_id = get(session, field, -1)
-    if match_id > 0
-      try
-        matchdelete(match_id, session.winid)
-      catch
-      endtry
-      session[field] = -1
+  for field in ['viewport_match', 'cursor_match', 'sign_match']
+    DeleteMatch(key, field)
+  endfor
+  sessions[key].sign_rows = []
+enddef
+
+
+def UpdateSigns(key: string)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  DeleteMatch(key, 'sign_match')
+  session.sign_rows = []
+  if !get(g:, 'simpleminimap_show_signs', 1)
+      || !WindowExists(session.winid)
+      || empty(session.rows)
+      || !bufexists(session.source_bufnr)
+    return
+  endif
+
+  var placed: list<any> = []
+  try
+    placed = sign_getplaced(session.source_bufnr, {group: '*'})
+  catch
+    Log('could not read source signs: ' .. v:exception)
+    return
+  endtry
+  if empty(placed) || empty(get(placed[0], 'signs', []))
+    return
+  endif
+
+  var positions: list<any> = []
+  var seen: dict<bool> = {}
+  for sign in placed[0].signs
+    var minimap_row = RowForSourceLine(session.rows, get(sign, 'lnum', 0))
+    var row_key = string(minimap_row)
+    if minimap_row > 0 && !has_key(seen, row_key)
+      seen[row_key] = true
+      positions->add(minimap_row)
     endif
   endfor
+  session.sign_rows = copy(positions)
+  if !empty(positions)
+    session.sign_match = matchaddpos('SimpleMinimapSign', positions, 15, -1, {window: session.winid})
+  endif
 enddef
 
 
@@ -598,7 +864,8 @@ def UpdateViewport(key: string)
   var last_row = RowForSourceLine(session.rows, bottom_line)
   var cursor_row = RowForSourceLine(session.rows, cursor_line)
 
-  ClearMatches(key)
+  DeleteMatch(key, 'viewport_match')
+  DeleteMatch(key, 'cursor_match')
   if first_row > 0 && last_row >= first_row
     var positions: list<any> = []
     for line_number in range(first_row, last_row)
@@ -635,19 +902,28 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
 
   session.rows = rows
   session.source_lines = source_lines
+  session.render_count = get(session, 'render_count', 0) + 1
+  var started = get(session, 'request_started', [])
+  if type(started) == v:t_list && !empty(started)
+    session.last_render_ms = reltimefloat(reltime(started)) * 1000.0
+  endif
+  backend_restart_attempts = 0
+  backend_error = ''
   SetBufferLines(session.bufnr, output)
+  UpdateSigns(key)
   UpdateViewport(key)
+  redrawstatus
 enddef
 
 
 def ConfigureMinimapWindow(winid: number, bufnr: number)
-  win_execute(winid, 'setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted')
+  win_execute(winid, 'setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted nomodeline undolevels=-1')
   win_execute(winid, 'setlocal nowrap nonumber norelativenumber nocursorcolumn nocursorline')
   win_execute(winid, 'setlocal signcolumn=no foldcolumn=0 nofoldenable nolist')
   win_execute(winid, 'setlocal scrolloff=0 sidescrolloff=0 winfixwidth')
   win_execute(winid, 'setlocal filetype=simpleminimap wincolor=SimpleMinimapNormal')
   if get(g:, 'simpleminimap_show_statusline', 1)
-    setwinvar(winid, '&statusline', '%#SimpleMinimapTitle# SimpleMinimap ')
+    setwinvar(winid, '&statusline', '%#SimpleMinimapTitle#%{simpleminimap#Statusline()}%*')
   else
     setwinvar(winid, '&statusline', '')
   endif
@@ -656,8 +932,16 @@ def ConfigureMinimapWindow(winid: number, bufnr: number)
 
   win_execute(winid, 'nnoremap <silent> <buffer> q <Cmd>SimpleMinimapClose<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> r <Cmd>SimpleMinimapRefresh<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> s <Cmd>SimpleMinimapStyle<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> + <Cmd>call simpleminimap#AdjustWidth(2)<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> - <Cmd>call simpleminimap#AdjustWidth(-2)<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <Space> <Cmd>call simpleminimap#Preview()<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> <CR> <Cmd>call simpleminimap#Jump()<CR>')
-  win_execute(winid, 'nnoremap <silent> <buffer> <LeftMouse> <LeftMouse><Cmd>call simpleminimap#MouseJump()<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <LeftMouse> <LeftMouse><Cmd>call simpleminimap#MouseDown()<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <LeftDrag> <Cmd>call simpleminimap#MouseDrag()<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <LeftRelease> <Cmd>call simpleminimap#MouseUp()<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <ScrollWheelUp> <Cmd>call simpleminimap#ScrollSource(-1)<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <ScrollWheelDown> <Cmd>call simpleminimap#ScrollSource(1)<CR>')
 enddef
 
 
@@ -674,13 +958,20 @@ def OpenForCurrentTab()
     return
   endif
 
+  var minimap_winid = 0
+  var opened_key = ''
   internal_change = true
   try
-    botright vertical new
+    if get(g:, 'simpleminimap_side', 'right') ==# 'left'
+      topleft vertical new
+    else
+      botright vertical new
+    endif
+    minimap_winid = win_getid()
     execute 'vertical resize ' .. get(g:, 'simpleminimap_width', 18)
-    var minimap_winid = win_getid()
     var minimap_bufnr = bufnr()
     var key = string(minimap_winid)
+    opened_key = key
     sessions[key] = {
       winid: minimap_winid,
       bufnr: minimap_bufnr,
@@ -692,11 +983,27 @@ def OpenForCurrentTab()
       timer: 0,
       viewport_match: -1,
       cursor_match: -1,
+      sign_match: -1,
+      sign_rows: [],
+      preview_origin: [],
+      request_started: [],
+      render_count: 0,
+      last_render_ms: -1.0,
     }
     ConfigureMinimapWindow(minimap_winid, minimap_bufnr)
     SetBufferLines(minimap_bufnr, ['SimpleMinimap starting…'])
     win_gotoid(source_winid)
     Schedule(key, 0)
+  catch
+    if opened_key !=# '' && has_key(sessions, opened_key)
+      DropSession(opened_key)
+    endif
+    if WindowExists(minimap_winid) && winnr('$') > 1
+      win_execute(minimap_winid, 'close!')
+    endif
+    echohl WarningMsg
+    echom '[SimpleMinimap] could not open minimap: ' .. v:exception
+    echohl None
   finally
     internal_change = false
   endtry
@@ -738,6 +1045,7 @@ export def SetupHighlights()
   highlight default link SimpleMinimapNormal Comment
   highlight default link SimpleMinimapViewport Visual
   highlight default link SimpleMinimapCursor Search
+  highlight default link SimpleMinimapSign WarningMsg
   highlight default link SimpleMinimapTitle Title
 enddef
 
@@ -773,6 +1081,173 @@ export def Refresh()
 enddef
 
 
+export def Focus()
+  var key = CurrentSessionKey()
+  if key ==# ''
+    OpenForCurrentTab()
+    key = CurrentSessionKey()
+  endif
+  if key !=# '' && has_key(sessions, key)
+    win_gotoid(sessions[key].winid)
+  endif
+enddef
+
+
+export def MaybeAutoOpen()
+  if !get(g:, 'simpleminimap_auto_open', 0) || CurrentSessionKey() !=# ''
+    return
+  endif
+  if IsEligibleSourceWindow(win_getid())
+    OpenForCurrentTab()
+  endif
+enddef
+
+
+export def CompleteStyle(lead: string, _command: string, _cursor: number): list<string>
+  var matches: list<string> = []
+  for style in ['braille', 'blocks', 'ascii']
+    if stridx(style, lead) == 0
+      matches->add(style)
+    endif
+  endfor
+  return matches
+enddef
+
+
+export def SetStyle(value: string)
+  var styles = ['braille', 'blocks', 'ascii']
+  var style = value
+  if style ==# ''
+    var current = index(styles, get(g:, 'simpleminimap_render_style', 'braille'))
+    style = styles[current < 0 ? 0 : (current + 1) % len(styles)]
+  endif
+  if index(styles, style) < 0
+    echohl WarningMsg
+    echom '[SimpleMinimap] style must be braille, blocks or ascii.'
+    echohl None
+    return
+  endif
+  g:simpleminimap_render_style = style
+  for key in keys(sessions)
+    Schedule(key, 0)
+  endfor
+  redrawstatus
+enddef
+
+
+export def Resize(value: string)
+  if value ==# ''
+    echom printf('[SimpleMinimap] width: %d', get(g:, 'simpleminimap_width', 18))
+    return
+  endif
+  if value !~# '^\d\+$'
+    echohl WarningMsg
+    echom '[SimpleMinimap] width must be a number in 6..80.'
+    echohl None
+    return
+  endif
+  var width = Clamp(str2nr(value), 6, 80)
+  g:simpleminimap_width = width
+  var key = CurrentSessionKey()
+  if key !=# '' && has_key(sessions, key) && WindowExists(sessions[key].winid)
+    win_execute(sessions[key].winid, 'vertical resize ' .. width)
+    Schedule(key, 0)
+  endif
+enddef
+
+
+export def AdjustWidth(delta: number)
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
+    return
+  endif
+  var dimensions = WindowDimensions(sessions[key].winid)
+  if dimensions[0] > 0
+    Resize(string(dimensions[0] + delta))
+  endif
+enddef
+
+
+export def Restart()
+  backend_restart_attempts = 0
+  for key in keys(sessions)
+    RenderMessage(key, ['SimpleMinimap', 'restarting backend…'])
+  endfor
+  StopBackend(true)
+enddef
+
+
+export def Statusline(): string
+  var winid = get(g:, 'statusline_winid', win_getid())
+  var key = string(winid)
+  if !has_key(sessions, key)
+    return ' SimpleMinimap '
+  endif
+  var session = sessions[key]
+  var source_name = bufname(get(session, 'source_bufnr', -1))
+  var label = source_name ==# '' ? '[No Name]' : fnamemodify(source_name, ':t')
+  var style = get(g:, 'simpleminimap_render_style', 'braille')
+  var state = backend_ready ? '' : ' !'
+  var last_render_ms = get(session, 'last_render_ms', -1.0)
+  var timing = last_render_ms >= 0.0 ? printf(' · %.0fms', last_render_ms) : ''
+  return printf(' %s · %s%s%s ', label, style, timing, state)
+enddef
+
+
+def SourceTargetForRow(session: dict<any>, row_number: number): number
+  if row_number < 1 || row_number > len(session.rows)
+    return 0
+  endif
+  var row = session.rows[row_number - 1]
+  return row.start + ((row.end - row.start) / 2)
+enddef
+
+
+def MoveSourceToRow(key: string, row_number: number, focus_source: bool): bool
+  if !has_key(sessions, key)
+    return false
+  endif
+  var session = sessions[key]
+  var target = SourceTargetForRow(session, row_number)
+  if target <= 0 || !WindowExists(session.source_winid)
+    return false
+  endif
+
+  if focus_source
+    internal_change = true
+    try
+      if !win_gotoid(session.source_winid)
+        return false
+      endif
+      var origin = get(session, 'preview_origin', [])
+      if type(origin) == v:t_list && len(origin) >= 3
+        cursor(origin[1], origin[2])
+      endif
+      execute 'normal! ' .. target .. 'G'
+      normal! zv
+      normal! zz
+    finally
+      session.preview_origin = []
+      internal_change = false
+    endtry
+  else
+    if empty(get(session, 'preview_origin', []))
+      session.preview_origin = getcurpos(session.source_winid)
+    endif
+    internal_change = true
+    try
+      win_execute(session.source_winid, printf('call cursor(%d, 1)', target))
+      win_execute(session.source_winid, 'normal! zv')
+      win_execute(session.source_winid, 'normal! zz')
+    finally
+      internal_change = false
+    endtry
+  endif
+  UpdateViewport(key)
+  return true
+enddef
+
+
 export def Jump()
   var key = CurrentSessionKey()
   if key ==# '' || !has_key(sessions, key)
@@ -782,37 +1257,94 @@ export def Jump()
   if empty(session.rows)
     return
   endif
-  var row_number = line('.')
-  if row_number < 1 || row_number > len(session.rows)
+  MoveSourceToRow(key, line('.'), true)
+enddef
+
+
+export def Preview()
+  var key = CurrentSessionKey()
+  if key !=# ''
+    MoveSourceToRow(key, line('.'), false)
+  endif
+enddef
+
+
+def NavigateMouse(focus_source: bool): bool
+  var mouse = getmousepos()
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
+    return false
+  endif
+  var session = sessions[key]
+  if get(mouse, 'winid', 0) != session.winid
+    return false
+  endif
+  var raw_row = get(mouse, 'line', 0)
+  if raw_row < 1 || empty(session.rows)
+    return false
+  endif
+  var row_number = Clamp(raw_row, 1, len(session.rows))
+  win_gotoid(session.winid)
+  cursor(row_number, 1)
+  return MoveSourceToRow(key, row_number, focus_source)
+enddef
+
+
+export def MouseDown()
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
     return
   endif
-  var row = session.rows[row_number - 1]
-  var target = row.start + ((row.end - row.start) / 2)
-  if win_gotoid(session.source_winid)
-    cursor(target, 1)
-    normal! zz
-    UpdateViewport(key)
+  NavigateMouse(false)
+enddef
+
+
+export def MouseDrag()
+  var key = CurrentSessionKey()
+  if key !=# '' && has_key(sessions, key)
+    NavigateMouse(false)
+  endif
+enddef
+
+
+export def MouseUp()
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
+    return
+  endif
+  if !NavigateMouse(true)
+    win_gotoid(sessions[key].source_winid)
   endif
 enddef
 
 
 export def MouseJump()
-  var mouse = getmousepos()
+  # Backward-compatible public entry point used by older mappings.
+  NavigateMouse(true)
+enddef
+
+
+export def ScrollSource(direction: number)
   var key = CurrentSessionKey()
-  if key ==# '' || !has_key(sessions, key)
+  if key ==# '' || !has_key(sessions, key) || direction == 0
     return
   endif
   var session = sessions[key]
-  if get(mouse, 'winid', 0) != session.winid
+  var info = WindowInfo(session.source_winid)
+  var source_info = getbufinfo(session.source_bufnr)
+  if empty(info) || empty(source_info)
     return
   endif
-  var row_number = get(mouse, 'line', 0)
-  if row_number < 1 || row_number > len(session.rows)
-    return
-  endif
-  win_gotoid(session.winid)
-  cursor(row_number, 1)
-  Jump()
+  var step = get(g:, 'simpleminimap_mouse_scroll_lines', 3)
+  var source_lines = max([1, get(source_info[0], 'linecount', 1)])
+  var target_top = Clamp(get(info, 'topline', 1) + (direction * step), 1, source_lines)
+  internal_change = true
+  try
+    win_execute(session.source_winid, 'call winrestview({"topline": ' .. target_top .. '})')
+  finally
+    internal_change = false
+  endtry
+  UpdateViewport(key)
 enddef
 
 
@@ -826,18 +1358,40 @@ export def OnContextChanged()
   endif
   var session = sessions[key]
   var current_winid = win_getid()
-  if current_winid == session.winid || !IsEligibleSourceWindow(current_winid)
+  if current_winid == session.winid
+    return
+  endif
+  if !IsEligibleSourceWindow(current_winid)
+    if current_winid == session.source_winid || !IsEligibleSourceWindow(session.source_winid)
+      var tab_info = WindowInfo(session.winid)
+      var replacement = empty(tab_info) ? 0 : FindSourceWindow(tab_info.tabnr)
+      if replacement > 0
+        session.source_winid = replacement
+        session.source_bufnr = WindowInfo(replacement).bufnr
+        session.preview_origin = []
+        Schedule(key, 0)
+      elseif get(g:, 'simpleminimap_auto_close', 0)
+        CloseSession(key)
+      else
+        RenderMessage(key, ['SimpleMinimap', 'no editable window'])
+      endif
+    endif
     return
   endif
   var info = WindowInfo(current_winid)
   var changed = session.source_winid != current_winid || session.source_bufnr != info.bufnr
+  if current_winid == session.source_winid
+    session.preview_origin = []
+  endif
   session.source_winid = current_winid
   session.source_bufnr = info.bufnr
-  if changed
+  if changed || empty(session.rows)
+    session.preview_origin = []
     Schedule(key, 0)
   else
     UpdateViewport(key)
   endif
+  redrawstatus
 enddef
 
 
@@ -865,6 +1419,18 @@ export def OnCursorMoved(winid: number)
 enddef
 
 
+export def OnSignsChanged(bufnr: number)
+  if internal_change || bufnr <= 0
+    return
+  endif
+  for [key, session] in items(sessions)
+    if get(session, 'source_bufnr', -1) == bufnr
+      UpdateSigns(key)
+    endif
+  endfor
+enddef
+
+
 export def OnWinScrolled(winid: number)
   for [key, session] in items(sessions)
     if get(session, 'source_winid', 0) == winid
@@ -877,10 +1443,9 @@ enddef
 
 
 export def OnResized()
-  var key = CurrentSessionKey()
-  if key !=# ''
+  for key in keys(sessions)
     Schedule(key)
-  endif
+  endfor
 enddef
 
 
@@ -901,6 +1466,7 @@ export def OnWinClosed(winid: number)
       if replacement > 0
         session.source_winid = replacement
         session.source_bufnr = WindowInfo(replacement).bufnr
+        session.preview_origin = []
         Schedule(key, 0)
       elseif get(g:, 'simpleminimap_auto_close', 0)
         CloseSession(key)
@@ -924,7 +1490,12 @@ export def OnBufferWipeout(bufnr: number)
       if replacement > 0
         session.source_winid = replacement
         session.source_bufnr = WindowInfo(replacement).bufnr
+        session.preview_origin = []
         Schedule(key, 0)
+      elseif get(g:, 'simpleminimap_auto_close', 0)
+        CloseSession(key)
+      else
+        RenderMessage(key, ['SimpleMinimap', 'no editable window'])
       endif
     endif
   endfor
@@ -932,15 +1503,18 @@ enddef
 
 
 export def Health()
+  var daemon = FindDaemon()
   var checks = [
-    printf('Vim version: %d', v:version),
-    printf('+job: %d', has('job')),
-    printf('+channel: %d', has('channel')),
-    printf('+textprop: %d', has('textprop')),
-    printf('daemon: %s', FindDaemon() ==# '' ? 'not found' : FindDaemon()),
-    printf('backend status: %s', BackendRunning() ? job_status(backend_job) : 'stopped'),
-    printf('protocol ready: %d', backend_ready),
+    printf('[%s] Vim version: %d', v:version >= 900 ? 'OK' : 'FAIL', v:version),
+    printf('[%s] +job / +channel: %d / %d', has('job') && has('channel') ? 'OK' : 'FAIL', has('job'), has('channel')),
+    printf('[%s] daemon: %s', daemon ==# '' ? 'FAIL' : 'OK', daemon ==# '' ? 'not found' : daemon),
+    printf('[%s] backend: %s, protocol v%d ready=%d', BackendRunning() ? 'OK' : 'INFO', BackendRunning() ? job_status(backend_job) : 'stopped', PROTOCOL_VERSION, backend_ready ? 1 : 0),
+    printf('[INFO] sessions: %d, pending requests: %d', len(sessions), len(requests)),
+    printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
   ]
+  if backend_error !=# ''
+    checks->add('[WARN] last backend error: ' .. backend_error)
+  endif
   echo join(checks, "\n")
 enddef
 
@@ -953,6 +1527,7 @@ export def DebugStatus(): dict<any>
     backend_running: BackendRunning(),
     backend_ready: backend_ready,
     backend_error: backend_error,
+    backend_restart_attempts: backend_restart_attempts,
     pending_requests: deepcopy(requests),
   }
 enddef
@@ -965,14 +1540,9 @@ export def Stop()
       timer_stop(session.timer)
     endif
   endfor
+  StopBackend(false)
   sessions = {}
   requests = {}
   incoming = {}
-  if BackendRunning()
-    try
-      job_stop(backend_job)
-    catch
-    endtry
-  endif
-  backend_ready = false
+  backend_restart_attempts = 0
 enddef

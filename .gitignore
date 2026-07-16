@@ -2,3 +2,6 @@
 /lib/simpleminimap-daemon
 /lib/simpleminimap-daemon.exe
 *.log
+*.swp
+*.swo
+.DS_Store

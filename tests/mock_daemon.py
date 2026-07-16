@@ -1,4 +1,5 @@
 #!/usr/bin/env python3
+import os
 import sys
 
 PROTOCOL = 1
@@ -14,6 +15,16 @@ def emit(line: str) -> None:
 
 
 emit(f'READY\t{PROTOCOL}')
+crash_once = os.environ.get('SIMPLEMINIMAP_TEST_CRASH_ONCE', '')
+if crash_once:
+    try:
+        descriptor = os.open(crash_once, os.O_CREAT | os.O_EXCL | os.O_WRONLY, 0o600)
+    except FileExistsError:
+        pass
+    else:
+        os.close(descriptor)
+        sys.exit(23)
+
 pending = None
 for raw in sys.stdin:
     line = raw.rstrip('\n')

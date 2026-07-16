@@ -3,13 +3,23 @@ set nomore
 set shortmess+=I
 
 let s:root = fnamemodify(expand('<sfile>:p'), ':h:h')
+call delete(s:root .. '/tests/vim-errors.log')
 execute 'set runtimepath^=' .. fnameescape(s:root)
 let g:simpleminimap_daemon_path = s:root .. '/tests/mock_daemon.py'
 let g:simpleminimap_debounce = 0
 let g:simpleminimap_width = 10
 let g:simpleminimap_set_default_mapping = 0
 let g:simpleminimap_auto_close = 0
+let g:simpleminimap_side = 'left'
 runtime plugin/simpleminimap.vim
+
+" Filetypes can be excluded without special-casing their buftype.
+let g:simpleminimap_ignore_filetypes = ['simpleminimap-test-ignore']
+set filetype=simpleminimap-test-ignore
+SimpleMinimapOpen
+call assert_equal(0, len(simpleminimap#DebugStatus().sessions))
+set filetype=
+let g:simpleminimap_ignore_filetypes = []
 
 " Closing the source can leave the minimap as Vim's final window.  Closing the
 " plugin must restore a usable normal window instead of throwing E444.
@@ -17,6 +27,7 @@ call setline(1, ['source one', 'source two'])
 let s:source = win_getid()
 SimpleMinimapOpen
 let s:session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_equal(1, win_id2win(s:session.winid))
 call win_gotoid(s:source)
 close!
 sleep 50m
@@ -29,6 +40,13 @@ call assert_equal('', &filetype)
 call assert_equal('', &buftype)
 call assert_equal(0, &winfixwidth)
 call assert_true(winwidth(0) > g:simpleminimap_width)
+
+" Auto-open is opt-in and uses the same eligibility/session safeguards.
+let g:simpleminimap_auto_open = 1
+call simpleminimap#MaybeAutoOpen()
+call assert_equal(1, len(simpleminimap#DebugStatus().sessions))
+SimpleMinimapClose
+let g:simpleminimap_auto_open = 0
 
 " Sessions are scoped per tab while sharing one backend process.
 call setline(1, ['tab one'])

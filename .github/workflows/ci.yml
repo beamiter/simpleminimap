@@ -5,6 +5,14 @@ on:
   pull_request:
 
 jobs:
+  msrv:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: dtolnay/rust-toolchain@1.70.0
+      - name: Check minimum supported Rust
+        run: cargo check --all-targets --locked
+
   test:
     runs-on: ubuntu-latest
     steps:
@@ -29,5 +37,6 @@ jobs:
       - name: Vim integration with Rust daemon
         run: |
           cargo build --release --locked
+          target/release/simpleminimap-daemon --self-test
           SIMPLEMINIMAP_TEST_DAEMON="$PWD/target/release/simpleminimap-daemon" \
             vim -Nu NONE -n -es -S tests/vim_integration.vim

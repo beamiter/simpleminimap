@@ -6,6 +6,8 @@ const MAX_WIDTH: usize = 256;
 const MAX_HEIGHT: usize = 2_000;
 const MAX_COLUMNS: usize = 1_000;
 const MAX_GROUPS: usize = 2_000;
+const MAX_SOURCE_LINES: usize = 100_000_000;
+const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
 #[derive(Debug)]
 struct SampleGroup {
@@ -34,21 +36,35 @@ enum RenderStyle {
 }
 
 impl RenderStyle {
-    fn parse(value: &str) -> Self {
+    fn parse(value: &str) -> Option<Self> {
         match value {
-            "blocks" => Self::Blocks,
-            "ascii" => Self::Ascii,
-            _ => Self::Braille,
+            "braille" => Some(Self::Braille),
+            "blocks" => Some(Self::Blocks),
+            "ascii" => Some(Self::Ascii),
+            _ => None,
         }
     }
 }
 
 fn main() {
-    let mut args = env::args().skip(1);
-    if let Some(arg) = args.next() {
+    let args: Vec<String> = env::args().skip(1).collect();
+    if !args.is_empty() {
+        if args.len() != 1 {
+            eprintln!("simpleminimap-daemon accepts at most one argument");
+            std::process::exit(2);
+        }
+        let arg = &args[0];
         match arg.as_str() {
             "--version" | "-V" => {
                 println!("simpleminimap-daemon {}", env!("CARGO_PKG_VERSION"));
+                return;
+            }
+            "--help" | "-h" => {
+                println!(
+                    "simpleminimap-daemon {}\n\n\
+                     Usage: simpleminimap-daemon [--self-test|--version|--help]",
+                    env!("CARGO_PKG_VERSION")
+                );
                 return;
             }
             "--self-test" => {
@@ -74,14 +90,22 @@ fn main() {
 
 fn run() -> Result<(), String> {
     let stdin = io::stdin();
+    let mut input = stdin.lock();
     let mut stdout = io::BufWriter::new(io::stdout().lock());
     let mut pending: Option<RenderRequest> = None;
 
     writeln!(stdout, "READY\t{PROTOCOL_VERSION}").map_err(|e| e.to_string())?;
     stdout.flush().map_err(|e| e.to_string())?;
 
-    for line_result in stdin.lock().lines() {
-        let line = line_result.map_err(|e| format!("stdin read failed: {e}"))?;
+    while let Some(record) = read_protocol_line(&mut input)? {
+        let line = match record {
+            ProtocolLine::Valid(line) => line,
+            ProtocolLine::Invalid(message) => {
+                pending = None;
+                write_error(&mut stdout, 0, &message)?;
+                continue;
+            }
+        };
         if line.is_empty() {
             continue;
         }
@@ -89,13 +113,28 @@ fn run() -> Result<(), String> {
         let fields: Vec<&str> = line.split('\t').collect();
         let command = fields.first().copied().unwrap_or_default();
         match command {
-            "B" => match parse_begin(&fields) {
-                Ok(request) => pending = Some(request),
-                Err((id, message)) => {
-                    write_error(&mut stdout, id, &message)?;
+            "B" => {
+                if pending.is_some() {
+                    let id = fields
+                        .get(1)
+                        .and_then(|value| value.parse::<u64>().ok())
+                        .unwrap_or(0);
+                    write_error(
+                        &mut stdout,
+                        id,
+                        "render begin while another request is active",
+                    )?;
                     pending = None;
+                } else {
+                    match parse_begin(&fields) {
+                        Ok(request) => pending = Some(request),
+                        Err((id, message)) => {
+                            write_error(&mut stdout, id, &message)?;
+                            pending = None;
+                        }
+                    }
                 }
-            },
+            }
             "G" => {
                 if let Err((id, message)) = parse_group(&fields, pending.as_mut()) {
                     write_error(&mut stdout, id, &message)?;
@@ -107,6 +146,15 @@ fn run() -> Result<(), String> {
                     .get(1)
                     .and_then(|s| s.parse::<u64>().ok())
                     .unwrap_or(0);
+                if fields.len() != 2 {
+                    write_error(
+                        &mut stdout,
+                        id,
+                        &format!("render end expects 2 fields, got {}", fields.len()),
+                    )?;
+                    pending = None;
+                    continue;
+                }
                 let Some(request) = pending.take() else {
                     write_error(&mut stdout, id, "render end without a matching begin")?;
                     continue;
@@ -142,10 +190,23 @@ fn run() -> Result<(), String> {
                 render_and_write(&mut stdout, request)?;
             }
             "P" => {
-                let id = fields
-                    .get(1)
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
+                let id = match (fields.len(), fields.get(1)) {
+                    (2, Some(value)) => match value.parse::<u64>() {
+                        Ok(id) => id,
+                        Err(_) => {
+                            write_error(&mut stdout, 0, "invalid ping ID")?;
+                            continue;
+                        }
+                    },
+                    _ => {
+                        write_error(
+                            &mut stdout,
+                            0,
+                            &format!("ping expects 2 fields, got {}", fields.len()),
+                        )?;
+                        continue;
+                    }
+                };
                 writeln!(stdout, "PONG\t{id}\t{PROTOCOL_VERSION}").map_err(|e| e.to_string())?;
                 stdout.flush().map_err(|e| e.to_string())?;
             }
@@ -159,6 +220,61 @@ fn run() -> Result<(), String> {
     Ok(())
 }
 
+enum ProtocolLine {
+    Valid(String),
+    Invalid(String),
+}
+
+fn read_protocol_line<R: BufRead>(reader: &mut R) -> Result<Option<ProtocolLine>, String> {
+    let mut bytes = Vec::new();
+    let mut too_long = false;
+    let mut reached_eof = false;
+
+    loop {
+        let available = reader
+            .fill_buf()
+            .map_err(|error| format!("stdin read failed: {error}"))?;
+        if available.is_empty() {
+            reached_eof = true;
+            break;
+        }
+
+        let newline = available.iter().position(|byte| *byte == b'\n');
+        let consumed = newline.map_or(available.len(), |index| index + 1);
+        let content_len = newline.unwrap_or(available.len());
+        if !too_long {
+            if bytes.len().saturating_add(content_len) > MAX_PROTOCOL_LINE_BYTES {
+                bytes.clear();
+                too_long = true;
+            } else {
+                bytes.extend_from_slice(&available[..content_len]);
+            }
+        }
+        reader.consume(consumed);
+        if newline.is_some() {
+            break;
+        }
+    }
+
+    if reached_eof && bytes.is_empty() && !too_long {
+        return Ok(None);
+    }
+    if too_long {
+        return Ok(Some(ProtocolLine::Invalid(format!(
+            "protocol line exceeds {MAX_PROTOCOL_LINE_BYTES} bytes"
+        ))));
+    }
+    if bytes.last() == Some(&b'\r') {
+        bytes.pop();
+    }
+    match String::from_utf8(bytes) {
+        Ok(line) => Ok(Some(ProtocolLine::Valid(line))),
+        Err(_) => Ok(Some(ProtocolLine::Invalid(
+            "protocol line is not valid UTF-8".to_string(),
+        ))),
+    }
+}
+
 fn parse_begin(fields: &[&str]) -> Result<RenderRequest, (u64, String)> {
     let id = parse_u64(fields, 1, 0, "request ID")?;
     if fields.len() != 10 {
@@ -169,7 +285,8 @@ fn parse_begin(fields: &[&str]) -> Result<RenderRequest, (u64, String)> {
     let height = parse_usize(fields, 3, id, "height")?;
     let max_columns = parse_usize(fields, 4, id, "max columns")?;
     let tabstop = parse_usize(fields, 5, id, "tabstop")?;
-    let style = RenderStyle::parse(fields[6]);
+    let style = RenderStyle::parse(fields[6])
+        .ok_or_else(|| (id, format!("unsupported render style {}", fields[6])))?;
     let source_lines = parse_usize(fields, 7, id, "source line count")?;
     let expected_groups = parse_usize(fields, 8, id, "group count")?;
     let protocol = parse_usize(fields, 9, id, "protocol version")?;
@@ -191,6 +308,12 @@ fn parse_begin(fields: &[&str]) -> Result<RenderRequest, (u64, String)> {
     }
     if source_lines == 0 {
         return Err((id, "source line count must be at least 1".to_string()));
+    }
+    if source_lines > MAX_SOURCE_LINES {
+        return Err((
+            id,
+            format!("source line count must not exceed {MAX_SOURCE_LINES}"),
+        ));
     }
     if expected_groups == 0 || expected_groups > height || expected_groups > MAX_GROUPS {
         return Err((
@@ -250,10 +373,10 @@ fn parse_group(fields: &[&str], pending: Option<&mut RenderRequest>) -> Result<(
     }
 
     let samples = [
-        decode_field(fields[4]),
-        decode_field(fields[5]),
-        decode_field(fields[6]),
-        decode_field(fields[7]),
+        decode_field(fields[4]).map_err(|message| (id, message))?,
+        decode_field(fields[5]).map_err(|message| (id, message))?,
+        decode_field(fields[6]).map_err(|message| (id, message))?,
+        decode_field(fields[7]).map_err(|message| (id, message))?,
     ];
     if samples
         .iter()
@@ -426,38 +549,44 @@ fn density_glyph(density: usize, unicode: bool) -> char {
 }
 
 fn encode_field(value: &str) -> String {
-    let mut output = Vec::with_capacity(value.len());
-    for byte in value.as_bytes() {
-        match *byte {
-            b'%' | b'\t' | b'\r' | b'\n' => {
-                output.push(b'%');
-                output.push(hex_digit(*byte >> 4) as u8);
-                output.push(hex_digit(*byte & 0x0f) as u8);
+    let mut output = String::with_capacity(value.len());
+    for ch in value.chars() {
+        match ch {
+            '%' | '\t' | '\r' | '\n' => {
+                let byte = ch as u8;
+                output.push('%');
+                output.push(hex_digit(byte >> 4));
+                output.push(hex_digit(byte & 0x0f));
             }
-            _ => output.push(*byte),
+            _ => output.push(ch),
         }
     }
-    String::from_utf8(output).expect("encoding valid UTF-8 cannot fail")
+    output
 }
 
-fn decode_field(value: &str) -> String {
+fn decode_field(value: &str) -> Result<String, String> {
     let bytes = value.as_bytes();
     let mut output = Vec::with_capacity(bytes.len());
     let mut index = 0usize;
     while index < bytes.len() {
-        if bytes[index] == b'%' && index + 2 < bytes.len() {
-            if let (Some(high), Some(low)) =
-                (hex_value(bytes[index + 1]), hex_value(bytes[index + 2]))
-            {
-                output.push((high << 4) | low);
-                index += 3;
-                continue;
+        if bytes[index] == b'%' {
+            if index + 2 >= bytes.len() {
+                return Err("truncated protocol field escape".to_string());
             }
+            let Some(high) = hex_value(bytes[index + 1]) else {
+                return Err("invalid protocol field escape".to_string());
+            };
+            let Some(low) = hex_value(bytes[index + 2]) else {
+                return Err("invalid protocol field escape".to_string());
+            };
+            output.push((high << 4) | low);
+            index += 3;
+            continue;
         }
         output.push(bytes[index]);
         index += 1;
     }
-    String::from_utf8_lossy(&output).into_owned()
+    String::from_utf8(output).map_err(|_| "decoded protocol field is not valid UTF-8".to_string())
 }
 
 fn hex_digit(value: u8) -> char {
@@ -519,7 +648,7 @@ fn self_test() -> Result<(), String> {
         return Err("renderer returned the wrong dimensions".to_string());
     }
     let escaped = "a%\tb\n中";
-    if decode_field(&encode_field(escaped)) != escaped {
+    if decode_field(&encode_field(escaped)).map_err(|error| error.to_string())? != escaped {
         return Err("field codec round-trip failed".to_string());
     }
     Ok(())
@@ -528,11 +657,15 @@ fn self_test() -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use std::io::Cursor;
 
     #[test]
     fn protocol_field_codec_round_trips_utf8() {
         let input = "tabs\tpercent%newline\n中文";
-        assert_eq!(decode_field(&encode_field(input)), input);
+        assert_eq!(decode_field(&encode_field(input)).unwrap(), input);
+        assert!(decode_field("bad%2").is_err());
+        assert!(decode_field("bad%XZ").is_err());
+        assert!(decode_field("%FF").is_err());
     }
 
     #[test]
@@ -575,6 +708,9 @@ mod tests {
 
         let empty_groups = ["B", "1", "8", "4", "80", "4", "braille", "4", "0", "1"];
         assert!(parse_begin(&empty_groups).is_err());
+
+        let bad_style = ["B", "1", "8", "4", "80", "4", "pixels", "4", "1", "1"];
+        assert!(parse_begin(&bad_style).is_err());
     }
 
     #[test]
@@ -589,5 +725,33 @@ mod tests {
 
         let long = ["G", "9", "5", "8", "123456789", "", "", ""];
         assert!(parse_group(&long, Some(&mut request)).is_err());
+    }
+
+    #[test]
+    fn bounded_protocol_reader_recovers_after_an_oversized_line() {
+        let mut input = vec![b'x'; MAX_PROTOCOL_LINE_BYTES + 1];
+        input.extend_from_slice(b"\nP\t7\r\n");
+        let mut cursor = Cursor::new(input);
+
+        match read_protocol_line(&mut cursor).unwrap() {
+            Some(ProtocolLine::Invalid(message)) => assert!(message.contains("exceeds")),
+            _ => panic!("oversized line should be rejected"),
+        }
+        match read_protocol_line(&mut cursor).unwrap() {
+            Some(ProtocolLine::Valid(line)) => assert_eq!(line, "P\t7"),
+            _ => panic!("reader should recover at the next line boundary"),
+        }
+        assert!(read_protocol_line(&mut cursor).unwrap().is_none());
+    }
+
+    #[test]
+    fn occupancy_expands_tabs_and_clips_to_the_declared_width() {
+        let (occupied, used) = line_occupancy("\tX", 6, 4);
+        assert_eq!(occupied, [false, false, false, false, true, false]);
+        assert_eq!(used, 5);
+
+        let (clipped, used) = line_occupancy("123456789", 4, 4);
+        assert_eq!(clipped, [true, true, true, true]);
+        assert_eq!(used, 4);
     }
 }

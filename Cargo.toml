@@ -1,12 +1,14 @@
 [package]
 name = "simpleminimap"
-version = "0.1.0"
+version = "0.2.0"
 edition = "2021"
 rust-version = "1.70"
 description = "A tiny asynchronous minimap renderer for Vim 9"
 license = "MIT"
 repository = "https://github.com/beamiter/simpleminimap"
 readme = "README.md"
+keywords = ["vim", "minimap", "editor", "terminal"]
+categories = ["command-line-utilities", "development-tools"]
 
 [[bin]]
 name = "simpleminimap-daemon"

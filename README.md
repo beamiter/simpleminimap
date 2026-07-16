@@ -21,11 +21,13 @@ SimpleMinimap 是一个面向 **Vim 9** 的右侧代码缩略图插件。它参�
 - 在当前标签页最右侧创建固定宽度的垂直分屏；每个标签页最多一个 minimap。
 - Rust 常驻后台异步渲染，不在 Vim 主线程执行密集字符压缩。
 - 默认使用 Unicode Braille：一个字符承载 `2 × 4` 个密度点；也可切换为 Block 或纯 ASCII。
-- 高亮当前编辑窗口的可见范围和光标所在的 minimap 行。
+- 高亮当前编辑窗口的可见范围和光标所在的 minimap 行，并把 Git、LSP、
+  lint 等插件放置的 Vim signs 聚合投影到概览中。
 - 跟随当前标签页最近进入的普通编辑窗口；切换缓冲区、编辑、保存、改变 `tabstop` 或调整窗口大小时自动更新。
-- 在 minimap 中按 `<CR>` 或单击鼠标，跳到对应源代码范围的中点。
-- 带防抖和请求编号；旧的异步响应不会覆盖更新的缓冲区状态。
-- 大文件使用有界采样：每个 minimap 行最多读取 4 条代表性源代码行，传输列数也有上限。
+- 支持键盘预览/跳转、鼠标滚轮滚动，以及按住左键拖动视口；跳转会进入 Vim jump list。
+- 运行时可切换 Braille/Block/ASCII、调整宽度，也可把 minimap 放到左侧。
+- 带防抖、协议握手和请求合并；旧响应不会覆盖新状态，后台异常退出可自动恢复。
+- 大文件使用有界自适应采样；CJK、emoji、组合字符和 tab 按 Vim 实际显示单元归一化。
 - Rust 后台只使用标准库，没有运行时依赖，也不需要联网拉取 crate。
 
 ## 要求
@@ -100,6 +102,11 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimapOpen      " 打开
 :SimpleMinimapClose     " 关闭
 :SimpleMinimapRefresh   " 立即重绘
+:SimpleMinimapFocus     " 聚焦 minimap；尚未打开时先打开
+:SimpleMinimapResize 22 " 实时调整宽度（6..80）
+:SimpleMinimapStyle     " 循环 braille → blocks → ascii
+:SimpleMinimapStyle ascii
+:SimpleMinimapRestart   " 重启后台并保留当前 session
 :SimpleMinimapHealth    " 环境和后台状态
 :SimpleMinimapDebug     " 完整内部状态字典
 ```
@@ -109,6 +116,7 @@ cp target/release/simpleminimap-daemon lib/
 
 ```vim
 <Plug>(simpleminimap-toggle)
+<Plug>(simpleminimap-focus)
 ```
 
 例如：
@@ -123,9 +131,15 @@ minimap 缓冲区内的按键：
 | 按键 | 操作 |
 |---|---|
 | `<CR>` | 跳到当前 minimap 行对应源代码范围的中点 |
-| 左键单击 | 跳到点击位置对应的源代码范围 |
+| `<Space>` | 预览当前范围并保持 minimap 焦点 |
+| 左键单击/拖动 | 跳到目标范围；拖动时连续移动视口 |
+| 鼠标滚轮 | 滚动源代码窗口 |
 | `r` | 立即刷新 |
+| `s` | 循环切换渲染风格 |
+| `+` / `-` | 每次增加/减少 2 列宽度 |
 | `q` | 关闭当前标签页的 minimap |
+
+鼠标交互需要 Vim 已启用相应终端/GUI 鼠标事件，例如 `set mouse=a`。
 
 ## 配置
 
@@ -137,9 +151,16 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_max_columns` | `120` | 每条样本最多分析的逻辑列数，限制为 `20..1000` |
 | `g:simpleminimap_debounce` | `80` | 编辑后的重绘防抖，单位毫秒，限制为 `0..2000` |
 | `g:simpleminimap_render_style` | `'braille'` | `'braille'`、`'blocks'` 或 `'ascii'` |
+| `g:simpleminimap_sampling` | `'adaptive'` | `'adaptive'` 会在每个采样带中选择更有信息量的代码行；`'uniform'` 固定取中点 |
+| `g:simpleminimap_side` | `'right'` | 新建 minimap 的位置：`'right'` 或 `'left'` |
 | `g:simpleminimap_daemon_path` | `''` | 后台可执行文件绝对路径；空值时自动查找 |
 | `g:simpleminimap_show_statusline` | `1` | 是否显示 minimap 状态栏标题 |
+| `g:simpleminimap_show_signs` | `1` | 是否把源缓冲区中的 Vim signs 聚合显示到 minimap |
+| `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |
+| `g:simpleminimap_auto_open` | `0` | Vim 启动或进入标签页时自动打开 |
+| `g:simpleminimap_auto_restart` | `1` | 后台异常退出时限次自动重启 |
+| `g:simpleminimap_mouse_scroll_lines` | `3` | 在 minimap 上滚动一格滚轮时源窗口移动的行数，限制为 `1..50` |
 | `g:simpleminimap_set_default_mapping` | `1` | 是否在 `<leader>m` 空闲时安装默认映射 |
 | `g:simpleminimap_debug` | `0` | 是否通过 `:messages` 输出调试日志 |
 
@@ -150,6 +171,8 @@ let g:simpleminimap_width = 16
 let g:simpleminimap_max_columns = 160
 let g:simpleminimap_debounce = 120
 let g:simpleminimap_render_style = 'blocks'
+let g:simpleminimap_side = 'left'
+let g:simpleminimap_ignore_filetypes = ['startify', 'dashboard']
 let g:simpleminimap_set_default_mapping = 0
 ```
 
@@ -162,6 +185,7 @@ let g:simpleminimap_set_default_mapping = 0
 | `SimpleMinimapNormal` | `Comment` | minimap 正文 |
 | `SimpleMinimapViewport` | `Visual` | 当前可见范围 |
 | `SimpleMinimapCursor` | `Search` | 光标所在范围 |
+| `SimpleMinimapSign` | `WarningMsg` | Git/LSP/lint 等 sign 所在范围 |
 | `SimpleMinimapTitle` | `Title` | 状态栏标题 |
 
 自定义示例：
@@ -177,8 +201,8 @@ augroup END
 ## 渲染模型
 
 1. Vim 根据 minimap 实际高度把整个源缓冲区切成等比例范围。
-2. 每个范围最多选取 4 条代表性代码行；范围不超过 4 行时不会跳过任何行。
-3. 每条样本只截取 `g:simpleminimap_max_columns` 范围内的内容。
+2. 每个范围被分成 4 个采样带；自适应模式在每带的起点、中点和终点中选择信息密度最高的代码行。范围不超过 4 行时不会跳过任何行。
+3. 每条样本只截取 `g:simpleminimap_max_columns` 范围内的内容，并按 Vim 的显示宽度展开宽字符、忽略零宽组合字符。
 4. Rust 把非空白字符转换为占用点，并按水平比例压缩。
 5. Braille 模式把 4 条样本映射为字符的 4 个点行，把相邻逻辑列映射为 2 个点列。
 6. Vim 收到 `{start, end, text}` 后更新 scratch buffer，并叠加视口与光标高亮。
@@ -202,6 +226,8 @@ X <id> <message>
 ```
 
 后台对宽度、高度、列数、tabstop 和组数做边界检查。标准输出只写协议记录；诊断写标准错误。
+前端只有在收到匹配版本的 `READY` 后才发送渲染请求，并会验证响应范围连续性、
+尺寸和最新请求 ID。后台限制单条协议记录大小，并严格校验转义和 UTF-8。
 
 ## 开发与测试
 
@@ -209,19 +235,21 @@ X <id> <message>
 make fmt             # rustfmt --check
 make lint            # clippy -D warnings
 make test-rust       # Rust 单元测试
+make test-daemon     # release 后台 CLI 与内置自测
 make test-vim        # Vim + Python mock 后台
 make test-vim-real   # Vim + release Rust 后台
 make test            # 全部测试
 ```
 
-Vim 集成测试会验证：异步启动、右侧 session 创建、重复打开防重、行范围映射、视口/光标 match、跳转，以及编辑后的新请求。
+Vim 集成测试会验证：异步握手、左右侧 session、重复打开防重、行范围映射、
+视口/光标/sign match、预览与跳转、运行时 resize/style、编辑合并、后台重启，
+以及源窗口消失后的生命周期恢复。
 
 ## 已知限制
 
 - 这是字符密度概览，不包含 Tree-sitter/语法组颜色，也不渲染真实字体像素。
-- Rust 当前按 Unicode 标量推进逻辑列；东亚宽字符在结构概览中按一个逻辑列处理。
 - minimap 使用独立垂直分屏，因此会占用 Vim 的一个窗口，而不是覆盖在编辑窗口内部。
-- 当前点击会跳转，但尚未实现像 VS Code 那样按住并拖动视口框。
+- signs 会聚合到对应 minimap 行并使用同一个高亮组，不保留每种 sign 的原始颜色。
 
 ## 许可证
 
