@@ -28,7 +28,7 @@ The plugin supports Vim 9 only.  It does not support Neovim.
 
 - Vim 9.0 or newer.
 - Vim compiled with +job and +channel.
-- Rust 1.70 or newer and Cargo when building from source.
+- Rust 1.85 or newer and Cargo when building from source.
 - UTF-8 is recommended for the default Braille renderer.
 
 Run: >

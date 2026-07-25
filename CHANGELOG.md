@@ -2,6 +2,12 @@
 
 All notable changes to SimpleMinimap are documented here.
 
+## 0.5.0
+
+- Migrated to Rust edition 2024; minimum supported Rust is now 1.85.
+- Internal cleanup (`div_ceil`); no behavior or protocol changes (protocol
+  stays at 2). Rerun `./install.sh` after updating.
+
 ## 0.4.0
 
 - Protocol v2: the daemon reports a density digit (0..3) per rendered cell

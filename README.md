@@ -42,7 +42,7 @@ SimpleMinimap 是一个面向 **Vim 9** 的右侧代码缩略图插件。它参�
 | 组件 | 要求 |
 |---|---|
 | Vim | Vim 9.0 或更新版本，编译时包含 `+job` 和 `+channel` |
-| Rust | Rust 1.70 或更新版本及 Cargo，仅从源码构建后台时需要 |
+| Rust | Rust 1.85 或更新版本及 Cargo，仅从源码构建后台时需要 |
 | 编码 | 推荐 UTF-8；不支持 Braille 的终端可使用 `blocks` 或 `ascii` |
 | Neovim | 不支持；插件使用 Vim9 script 与 Vim job/channel API |
 

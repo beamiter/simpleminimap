@@ -459,7 +459,7 @@ fn render(request: &RenderRequest) -> Vec<RenderedRow> {
     let visible_columns = max_used
         .max(dot_columns)
         .min(request.max_columns.max(dot_columns));
-    let scale = ((visible_columns + dot_columns - 1) / dot_columns).max(1);
+    let scale = visible_columns.div_ceil(dot_columns).max(1);
 
     prepared
         .iter()
@@ -725,10 +725,12 @@ mod tests {
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text.chars().count(), 12);
         assert_eq!(rows[0].shade.len(), 12);
-        assert!(rows[0]
-            .shade
-            .bytes()
-            .all(|byte| (b'0'..=b'3').contains(&byte)));
+        assert!(
+            rows[0]
+                .shade
+                .bytes()
+                .all(|byte| (b'0'..=b'3').contains(&byte))
+        );
         assert!(rows[0].shade.bytes().any(|byte| byte != b'0'));
     }
     #[test]

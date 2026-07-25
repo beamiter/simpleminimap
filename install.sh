@@ -5,10 +5,10 @@ ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")" && pwd)"
 TARGET_DIR="$ROOT/target/simpleminimap-install"
 LIB_DIR="$ROOT/lib"
 BINARY_NAME="simpleminimap-daemon"
-MIN_RUST_MINOR=70
+MIN_RUST_MINOR=85
 
 if ! command -v cargo >/dev/null 2>&1 || ! command -v rustc >/dev/null 2>&1; then
-  echo "error: Rust 1.70 or newer and Cargo are required." >&2
+  echo "error: Rust 1.85 or newer and Cargo are required." >&2
   exit 1
 fi
 
@@ -17,7 +17,7 @@ if [[ "$rustc_version" =~ ^rustc[[:space:]]+([0-9]+)\.([0-9]+)\. ]]; then
   rustc_major="${BASH_REMATCH[1]}"
   rustc_minor="${BASH_REMATCH[2]}"
   if (( rustc_major < 1 || (rustc_major == 1 && rustc_minor < MIN_RUST_MINOR) )); then
-    echo "error: Rust 1.70 or newer is required; found $rustc_version." >&2
+    echo "error: Rust 1.85 or newer is required; found $rustc_version." >&2
     exit 1
   fi
 else
