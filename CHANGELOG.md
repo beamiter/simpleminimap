@@ -2,6 +2,24 @@
 
 All notable changes to SimpleMinimap are documented here.
 
+## 0.3.0
+
+- Project active `hlsearch` matches onto the minimap through
+  `SimpleMinimapSearch`, using `matchbufline()` when available
+  (`g:simpleminimap_show_search`).
+- Classify projected signs by severity and kind (error, warning, info,
+  git add/change/delete) with dedicated highlight groups; the most severe
+  category wins when several signs share a minimap row.
+- Cache the render request signature and skip the daemon round-trip when the
+  sampled content, dimensions and style are unchanged; `:SimpleMinimapRefresh`
+  forces a real render.
+- Measure the backend round-trip latency with a ping after the handshake and
+  extend `:SimpleMinimapHealth` with the daemon version, latency, search
+  support and per-session render/cache statistics.
+- Map `<Esc>` inside the minimap to return focus to the source window.
+- Daemon: a new begin record now supersedes an unfinished request (the old
+  request receives an `X` response) instead of failing both.
+
 ## 0.2.0
 
 - Add adaptive bounded sampling and display-cell-aware handling for CJK, emoji,

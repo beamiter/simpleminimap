@@ -98,125 +98,116 @@ fn run() -> Result<(), String> {
     stdout.flush().map_err(|e| e.to_string())?;
 
     while let Some(record) = read_protocol_line(&mut input)? {
-        let line = match record {
-            ProtocolLine::Valid(line) => line,
+        match record {
+            ProtocolLine::Valid(line) => handle_record(&line, &mut pending, &mut stdout)?,
             ProtocolLine::Invalid(message) => {
                 pending = None;
                 write_error(&mut stdout, 0, &message)?;
-                continue;
-            }
-        };
-        if line.is_empty() {
-            continue;
-        }
-
-        let fields: Vec<&str> = line.split('\t').collect();
-        let command = fields.first().copied().unwrap_or_default();
-        match command {
-            "B" => {
-                if pending.is_some() {
-                    let id = fields
-                        .get(1)
-                        .and_then(|value| value.parse::<u64>().ok())
-                        .unwrap_or(0);
-                    write_error(
-                        &mut stdout,
-                        id,
-                        "render begin while another request is active",
-                    )?;
-                    pending = None;
-                } else {
-                    match parse_begin(&fields) {
-                        Ok(request) => pending = Some(request),
-                        Err((id, message)) => {
-                            write_error(&mut stdout, id, &message)?;
-                            pending = None;
-                        }
-                    }
-                }
-            }
-            "G" => {
-                if let Err((id, message)) = parse_group(&fields, pending.as_mut()) {
-                    write_error(&mut stdout, id, &message)?;
-                    pending = None;
-                }
-            }
-            "E" => {
-                let id = fields
-                    .get(1)
-                    .and_then(|s| s.parse::<u64>().ok())
-                    .unwrap_or(0);
-                if fields.len() != 2 {
-                    write_error(
-                        &mut stdout,
-                        id,
-                        &format!("render end expects 2 fields, got {}", fields.len()),
-                    )?;
-                    pending = None;
-                    continue;
-                }
-                let Some(request) = pending.take() else {
-                    write_error(&mut stdout, id, "render end without a matching begin")?;
-                    continue;
-                };
-                if request.id != id {
-                    write_error(
-                        &mut stdout,
-                        id,
-                        "render end ID does not match active request",
-                    )?;
-                    continue;
-                }
-                if request.groups.len() != request.expected_groups {
-                    write_error(
-                        &mut stdout,
-                        id,
-                        &format!(
-                            "expected {} sample groups, received {}",
-                            request.expected_groups,
-                            request.groups.len()
-                        ),
-                    )?;
-                    continue;
-                }
-                if request.groups.last().map(|group| group.end) != Some(request.source_lines) {
-                    write_error(
-                        &mut stdout,
-                        id,
-                        "sample groups must cover the complete source",
-                    )?;
-                    continue;
-                }
-                render_and_write(&mut stdout, request)?;
-            }
-            "P" => {
-                let id = match (fields.len(), fields.get(1)) {
-                    (2, Some(value)) => match value.parse::<u64>() {
-                        Ok(id) => id,
-                        Err(_) => {
-                            write_error(&mut stdout, 0, "invalid ping ID")?;
-                            continue;
-                        }
-                    },
-                    _ => {
-                        write_error(
-                            &mut stdout,
-                            0,
-                            &format!("ping expects 2 fields, got {}", fields.len()),
-                        )?;
-                        continue;
-                    }
-                };
-                writeln!(stdout, "PONG\t{id}\t{PROTOCOL_VERSION}").map_err(|e| e.to_string())?;
-                stdout.flush().map_err(|e| e.to_string())?;
-            }
-            _ => {
-                write_error(&mut stdout, 0, "unknown protocol command")?;
-                pending = None;
             }
         }
     }
 
+    Ok(())
+}
+
+fn handle_record<W: Write>(
+    line: &str,
+    pending: &mut Option<RenderRequest>,
+    out: &mut W,
+) -> Result<(), String> {
+    if line.is_empty() {
+        return Ok(());
+    }
+
+    let fields: Vec<&str> = line.split('\t').collect();
+    let command = fields.first().copied().unwrap_or_default();
+    match command {
+        "B" => {
+            // A newer begin always wins: the frontend coalesces edits, so an
+            // unfinished older request is stale by definition.
+            if let Some(superseded) = pending.take() {
+                write_error(out, superseded.id, "superseded by a newer request")?;
+            }
+            match parse_begin(&fields) {
+                Ok(request) => *pending = Some(request),
+                Err((id, message)) => {
+                    write_error(out, id, &message)?;
+                    *pending = None;
+                }
+            }
+        }
+        "G" => {
+            if let Err((id, message)) = parse_group(&fields, pending.as_mut()) {
+                write_error(out, id, &message)?;
+                *pending = None;
+            }
+        }
+        "E" => {
+            let id = fields
+                .get(1)
+                .and_then(|s| s.parse::<u64>().ok())
+                .unwrap_or(0);
+            if fields.len() != 2 {
+                write_error(
+                    out,
+                    id,
+                    &format!("render end expects 2 fields, got {}", fields.len()),
+                )?;
+                *pending = None;
+                return Ok(());
+            }
+            let Some(request) = pending.take() else {
+                write_error(out, id, "render end without a matching begin")?;
+                return Ok(());
+            };
+            if request.id != id {
+                write_error(out, id, "render end ID does not match active request")?;
+                return Ok(());
+            }
+            if request.groups.len() != request.expected_groups {
+                write_error(
+                    out,
+                    id,
+                    &format!(
+                        "expected {} sample groups, received {}",
+                        request.expected_groups,
+                        request.groups.len()
+                    ),
+                )?;
+                return Ok(());
+            }
+            if request.groups.last().map(|group| group.end) != Some(request.source_lines) {
+                write_error(out, id, "sample groups must cover the complete source")?;
+                return Ok(());
+            }
+            render_and_write(out, request)?;
+        }
+        "P" => {
+            let id = match (fields.len(), fields.get(1)) {
+                (2, Some(value)) => match value.parse::<u64>() {
+                    Ok(id) => id,
+                    Err(_) => {
+                        write_error(out, 0, "invalid ping ID")?;
+                        return Ok(());
+                    }
+                },
+                _ => {
+                    write_error(
+                        out,
+                        0,
+                        &format!("ping expects 2 fields, got {}", fields.len()),
+                    )?;
+                    return Ok(());
+                }
+            };
+            writeln!(out, "PONG\t{id}\t{PROTOCOL_VERSION}").map_err(|e| e.to_string())?;
+            out.flush().map_err(|e| e.to_string())?;
+        }
+        _ => {
+            write_error(out, 0, "unknown protocol command")?;
+            *pending = None;
+        }
+    }
     Ok(())
 }
 
@@ -725,6 +716,32 @@ mod tests {
 
         let long = ["G", "9", "5", "8", "123456789", "", "", ""];
         assert!(parse_group(&long, Some(&mut request)).is_err());
+    }
+
+    #[test]
+    fn begin_preempts_an_active_request() {
+        let mut pending: Option<RenderRequest> = None;
+        let mut out: Vec<u8> = Vec::new();
+        handle_record(
+            "B\t1\t8\t4\t80\t4\tbraille\t4\t1\t1",
+            &mut pending,
+            &mut out,
+        )
+        .unwrap();
+        handle_record(
+            "B\t2\t8\t4\t80\t4\tbraille\t4\t1\t1",
+            &mut pending,
+            &mut out,
+        )
+        .unwrap();
+        handle_record("G\t2\t1\t4\tfn main()\t\t\t", &mut pending, &mut out).unwrap();
+        handle_record("E\t2", &mut pending, &mut out).unwrap();
+
+        let output = String::from_utf8(out).unwrap();
+        assert!(output.contains("X\t1\tsuperseded by a newer request"));
+        assert!(output.contains("B\t2\t4\t1"));
+        assert!(output.ends_with("E\t2\n"));
+        assert!(pending.is_none());
     }
 
     #[test]

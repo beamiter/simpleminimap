@@ -22,11 +22,16 @@ SimpleMinimap 是一个面向 **Vim 9** 的右侧代码缩略图插件。它参�
 - Rust 常驻后台异步渲染，不在 Vim 主线程执行密集字符压缩。
 - 默认使用 Unicode Braille：一个字符承载 `2 × 4` 个密度点；也可切换为 Block 或纯 ASCII。
 - 高亮当前编辑窗口的可见范围和光标所在的 minimap 行，并把 Git、LSP、
-  lint 等插件放置的 Vim signs 聚合投影到概览中。
+  lint 等插件放置的 Vim signs 聚合投影到概览中；signs 按名称自动分类为
+  error/warning/info/git add/change/delete 并使用各自的高亮组，同一行取最高严重级。
+- `hlsearch` 激活时把搜索匹配投影到 minimap（需要 Vim 9.1.0009+ 的
+  `matchbufline()`，不满足时静默禁用）。
 - 跟随当前标签页最近进入的普通编辑窗口；切换缓冲区、编辑、保存、改变 `tabstop` 或调整窗口大小时自动更新。
 - 支持键盘预览/跳转、鼠标滚轮滚动，以及按住左键拖动视口；跳转会进入 Vim jump list。
 - 运行时可切换 Braille/Block/ASCII、调整宽度，也可把 minimap 放到左侧。
-- 带防抖、协议握手和请求合并；旧响应不会覆盖新状态，后台异常退出可自动恢复。
+- 带防抖、协议握手和请求合并；旧响应不会覆盖新状态，后台异常退出可自动恢复，
+  后台侧新请求可直接抢占未完成的旧请求。
+- 请求体签名缓存：内容未变化时跳过后台往返，只刷新视口/光标/sign/搜索叠加层。
 - 大文件使用有界自适应采样；CJK、emoji、组合字符和 tab 按 Vim 实际显示单元归一化。
 - Rust 后台只使用标准库，没有运行时依赖，也不需要联网拉取 crate。
 
@@ -107,7 +112,7 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimapStyle     " 循环 braille → blocks → ascii
 :SimpleMinimapStyle ascii
 :SimpleMinimapRestart   " 重启后台并保留当前 session
-:SimpleMinimapHealth    " 环境和后台状态
+:SimpleMinimapHealth    " 环境和后台状态（含 daemon 版本、往返延迟、渲染统计）
 :SimpleMinimapDebug     " 完整内部状态字典
 ```
 
@@ -137,6 +142,7 @@ minimap 缓冲区内的按键：
 | `r` | 立即刷新 |
 | `s` | 循环切换渲染风格 |
 | `+` / `-` | 每次增加/减少 2 列宽度 |
+| `<Esc>` | 焦点返回源代码窗口 |
 | `q` | 关闭当前标签页的 minimap |
 
 鼠标交互需要 Vim 已启用相应终端/GUI 鼠标事件，例如 `set mouse=a`。
@@ -156,6 +162,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_daemon_path` | `''` | 后台可执行文件绝对路径；空值时自动查找 |
 | `g:simpleminimap_show_statusline` | `1` | 是否显示 minimap 状态栏标题 |
 | `g:simpleminimap_show_signs` | `1` | 是否把源缓冲区中的 Vim signs 聚合显示到 minimap |
+| `g:simpleminimap_show_search` | `1` | 是否把 `hlsearch` 匹配投影到 minimap（需要 `matchbufline()`） |
 | `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |
 | `g:simpleminimap_auto_open` | `0` | Vim 启动或进入标签页时自动打开 |
@@ -185,7 +192,14 @@ let g:simpleminimap_set_default_mapping = 0
 | `SimpleMinimapNormal` | `Comment` | minimap 正文 |
 | `SimpleMinimapViewport` | `Visual` | 当前可见范围 |
 | `SimpleMinimapCursor` | `Search` | 光标所在范围 |
-| `SimpleMinimapSign` | `WarningMsg` | Git/LSP/lint 等 sign 所在范围 |
+| `SimpleMinimapSearch` | `IncSearch` | 搜索匹配所在范围 |
+| `SimpleMinimapSign` | `WarningMsg` | 未分类 sign 所在范围 |
+| `SimpleMinimapSignError` | `ErrorMsg` | error 类 sign |
+| `SimpleMinimapSignWarning` | `WarningMsg` | warning 类 sign |
+| `SimpleMinimapSignInfo` | `MoreMsg` | info/hint/note 类 sign |
+| `SimpleMinimapSignAdd` | `DiffAdd` | Git 新增行 sign |
+| `SimpleMinimapSignChange` | `DiffChange` | Git 修改行 sign |
+| `SimpleMinimapSignDelete` | `DiffDelete` | Git 删除行 sign |
 | `SimpleMinimapTitle` | `Title` | 状态栏标题 |
 
 自定义示例：
@@ -205,7 +219,7 @@ augroup END
 3. 每条样本只截取 `g:simpleminimap_max_columns` 范围内的内容，并按 Vim 的显示宽度展开宽字符、忽略零宽组合字符。
 4. Rust 把非空白字符转换为占用点，并按水平比例压缩。
 5. Braille 模式把 4 条样本映射为字符的 4 个点行，把相邻逻辑列映射为 2 个点列。
-6. Vim 收到 `{start, end, text}` 后更新 scratch buffer，并叠加视口与光标高亮。
+6. Vim 收到 `{start, end, text}` 后更新 scratch buffer，并叠加视口、光标、sign 与搜索高亮。
 
 因此，Vim 与后台之间传输的数据量由窗口高度和列数限制，而不是直接随文件总行数增长。
 
@@ -228,6 +242,9 @@ X <id> <message>
 后台对宽度、高度、列数、tabstop 和组数做边界检查。标准输出只写协议记录；诊断写标准错误。
 前端只有在收到匹配版本的 `READY` 后才发送渲染请求，并会验证响应范围连续性、
 尺寸和最新请求 ID。后台限制单条协议记录大小，并严格校验转义和 UTF-8。
+在旧请求尚未完成时收到新的 `B` 记录，后台会对旧请求回复 `X`（superseded）
+并直接处理新请求。前端在发送前会对请求体做 `sha256()` 签名，与上次已应用
+的渲染一致时跳过本次后台往返。
 
 ## 开发与测试
 

@@ -52,6 +52,7 @@ g:simpleminimap_set_default_mapping = Flag(get(g:, 'simpleminimap_set_default_ma
 g:simpleminimap_debug = Flag(get(g:, 'simpleminimap_debug', 0), 0)
 g:simpleminimap_show_statusline = Flag(get(g:, 'simpleminimap_show_statusline', 1), 1)
 g:simpleminimap_show_signs = Flag(get(g:, 'simpleminimap_show_signs', 1), 1)
+g:simpleminimap_show_search = Flag(get(g:, 'simpleminimap_show_search', 1), 1)
 g:simpleminimap_auto_close = Flag(get(g:, 'simpleminimap_auto_close', 0), 0)
 g:simpleminimap_auto_open = Flag(get(g:, 'simpleminimap_auto_open', 0), 0)
 g:simpleminimap_auto_restart = Flag(get(g:, 'simpleminimap_auto_restart', 1), 1)

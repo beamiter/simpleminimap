@@ -33,6 +33,8 @@ for raw in sys.stdin:
     fields = line.split('\t')
     command = fields[0]
     if command == 'B':
+        if pending is not None:
+            emit(f'X\t{pending["id"]}\t{encode("superseded by a newer request")}')
         pending = {
             'id': int(fields[1]),
             'width': int(fields[2]),

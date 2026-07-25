@@ -3,6 +3,27 @@ vim9script
 const PROTOCOL_VERSION = 1
 const MIN_RENDER_HEIGHT = 1
 const MAX_BACKEND_RESTARTS = 3
+# Search projection scans the whole source buffer; skip absurdly large ones.
+const SEARCH_MAX_LINES = 100000
+# Multiple signs can land on one minimap row; the highest priority wins.
+const SIGN_PRIORITY = {
+  error: 6,
+  warning: 5,
+  info: 4,
+  delete: 3,
+  change: 2,
+  add: 1,
+  other: 0,
+}
+const SIGN_GROUPS = {
+  error: 'SimpleMinimapSignError',
+  warning: 'SimpleMinimapSignWarning',
+  info: 'SimpleMinimapSignInfo',
+  delete: 'SimpleMinimapSignDelete',
+  change: 'SimpleMinimapSignChange',
+  add: 'SimpleMinimapSignAdd',
+  other: 'SimpleMinimapSign',
+}
 var plugin_root = fnamemodify(expand('<sfile>:p'), ':h:h')
 
 # key (minimap window ID as string) -> session dictionary.
@@ -19,6 +40,9 @@ var backend_stopping = false
 var backend_restart_requested = false
 var next_request_id = 0
 var internal_change = false
+var ping_id = 0
+var ping_started: any = []
+var backend_latency_ms = -1.0
 
 
 def Log(message: string)
@@ -230,12 +254,18 @@ def BackendOut(_channel: channel, message: string)
       for key in keys(sessions)
         Schedule(key, 0)
       endfor
+      SendPing()
     endif
     Log('backend ready: ' .. message)
     return
   endif
 
   if fields[0] ==# 'PONG'
+    if len(fields) >= 2 && str2nr(fields[1]) == ping_id
+        && type(ping_started) == v:t_list && !empty(ping_started)
+      backend_latency_ms = reltimefloat(reltime(ping_started)) * 1000.0
+      ping_started = []
+    endif
     return
   endif
 
@@ -329,6 +359,24 @@ def BackendOut(_channel: channel, message: string)
 enddef
 
 
+def SendPing()
+  if !BackendRunning() || !backend_ready
+    return
+  endif
+  next_request_id += 1
+  if next_request_id <= 0
+    next_request_id = 1
+  endif
+  ping_id = next_request_id
+  ping_started = reltime()
+  try
+    ch_sendraw(backend_job, printf("P\t%d\n", ping_id))
+  catch
+    ping_started = []
+  endtry
+enddef
+
+
 def BackendErr(_channel: channel, message: string)
   if message ==# ''
     return
@@ -369,6 +417,8 @@ def BackendExit(exited_job: job, status: number)
   backend_job = v:null
   backend_ready = false
   backend_error = printf('backend exited with status %d', status)
+  backend_latency_ms = -1.0
+  ping_started = []
   requests = {}
   incoming = {}
   backend_stopping = false
@@ -549,6 +599,7 @@ def RenderMessage(key: string, message_lines: list<string>)
   endwhile
   session.rows = []
   session.source_lines = 0
+  session.last_signature = ''
   SetBufferLines(session.bufnr, output)
   ClearMatches(key)
 enddef
@@ -650,14 +701,14 @@ def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_ch
 enddef
 
 
-def BuildPayload(key: string, request_id: number): string
+def BuildRequestBody(key: string): dict<any>
   var session = sessions[key]
   var dimensions = WindowDimensions(session.winid)
   var width = Clamp(dimensions[0], 1, 256)
   var height = Clamp(dimensions[1], MIN_RENDER_HEIGHT, 2000)
   var source_info = getbufinfo(session.source_bufnr)
   if empty(source_info)
-    return ''
+    return {}
   endif
   var source_lines = max([1, get(source_info[0], 'linecount', 1)])
   var row_count = min([height, max([1, (source_lines + 3) / 4])])
@@ -668,19 +719,44 @@ def BuildPayload(key: string, request_id: number): string
     style = 'braille'
   endif
 
-  var parts: list<string> = []
-  parts->add(printf("B\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d",
-    request_id, width, height, max_columns, tabstop, style, source_lines, row_count, PROTOCOL_VERSION))
-  var max_chars = max_columns
+  var groups: list<string> = []
   for row_index in range(0, row_count - 1)
     var start_zero = (row_index * source_lines) / row_count
     var end_zero = (((row_index + 1) * source_lines) / row_count) - 1
     var start_line = start_zero + 1
     var end_line = max([start_line, end_zero + 1])
-    var samples = BuildSampleGroup(session.source_bufnr, start_line, end_line, max_chars, tabstop)
-    parts->add(printf("G\t%d\t%d\t%d\t%s\t%s\t%s\t%s",
-      request_id, start_line, end_line,
+    var samples = BuildSampleGroup(session.source_bufnr, start_line, end_line, max_columns, tabstop)
+    groups->add(printf("%d\t%d\t%s\t%s\t%s\t%s",
+      start_line, end_line,
       EncodeField(samples[0]), EncodeField(samples[1]), EncodeField(samples[2]), EncodeField(samples[3])))
+  endfor
+  return {
+    width: width,
+    height: height,
+    max_columns: max_columns,
+    tabstop: tabstop,
+    style: style,
+    source_lines: source_lines,
+    groups: groups,
+  }
+enddef
+
+
+def BodySignature(body: dict<any>): string
+  var raw = printf("%d|%d|%d|%d|%s|%d\n", body.width, body.height,
+    body.max_columns, body.tabstop, body.style, body.source_lines)
+    .. join(body.groups, "\n")
+  return exists('*sha256') ? sha256(raw) : raw
+enddef
+
+
+def FormatPayload(body: dict<any>, request_id: number): string
+  var parts: list<string> = []
+  parts->add(printf("B\t%d\t%d\t%d\t%d\t%d\t%s\t%d\t%d\t%d",
+    request_id, body.width, body.height, body.max_columns, body.tabstop,
+    body.style, body.source_lines, len(body.groups), PROTOCOL_VERSION))
+  for group in body.groups
+    parts->add(printf("G\t%d\t%s", request_id, group))
   endfor
   parts->add(printf("E\t%d", request_id))
   return join(parts, "\n") .. "\n"
@@ -706,6 +782,25 @@ def RenderSession(key: string)
     return
   endif
 
+  session.source_bufnr = WindowInfo(session.source_winid).bufnr
+  var body = BuildRequestBody(key)
+  if empty(body)
+    RenderMessage(key, ['SimpleMinimap', 'source buffer unavailable'])
+    return
+  endif
+
+  var signature = BodySignature(body)
+  var force = get(session, 'force_render', false)
+  session.force_render = false
+  if !force && !empty(session.rows) && signature ==# get(session, 'last_signature', '')
+    # The daemon would produce identical output; refresh the overlays only.
+    session.render_skips = get(session, 'render_skips', 0) + 1
+    UpdateSigns(key)
+    UpdateViewport(key)
+    UpdateSearch(key)
+    return
+  endif
+
   ForgetRequestsForSession(key)
   next_request_id += 1
   if next_request_id <= 0
@@ -714,12 +809,8 @@ def RenderSession(key: string)
   var request_id = next_request_id
   session.request_id = request_id
   session.request_started = reltime()
-  session.source_bufnr = WindowInfo(session.source_winid).bufnr
-  var payload = BuildPayload(key, request_id)
-  if payload ==# ''
-    RenderMessage(key, ['SimpleMinimap', 'source buffer unavailable'])
-    return
-  endif
+  session.request_signature = signature
+  var payload = FormatPayload(body, request_id)
 
   requests[string(request_id)] = key
   try
@@ -739,11 +830,14 @@ def RenderTimer(key: string, _timer: number)
 enddef
 
 
-def Schedule(key: string, delay: number = -1)
+def Schedule(key: string, delay: number = -1, force: bool = false)
   if !has_key(sessions, key)
     return
   endif
   var session = sessions[key]
+  if force
+    session.force_render = true
+  endif
   if get(session, 'timer', 0) > 0
     timer_stop(session.timer)
     session.timer = 0
@@ -773,14 +867,54 @@ def DeleteMatch(key: string, field: string)
 enddef
 
 
+def ClearSignMatches(key: string)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  for match_id in get(session, 'sign_matches', [])
+    if match_id > 0 && WindowExists(session.winid)
+      try
+        matchdelete(match_id, session.winid)
+      catch
+      endtry
+    endif
+  endfor
+  session.sign_matches = []
+  session.sign_rows = []
+  session.sign_categories = {}
+enddef
+
+
 def ClearMatches(key: string)
   if !has_key(sessions, key)
     return
   endif
-  for field in ['viewport_match', 'cursor_match', 'sign_match']
+  for field in ['viewport_match', 'cursor_match', 'search_match']
     DeleteMatch(key, field)
   endfor
-  sessions[key].sign_rows = []
+  ClearSignMatches(key)
+  sessions[key].search_rows = []
+  sessions[key].search_state = []
+enddef
+
+
+def SignCategory(name: string): string
+  var lowered = tolower(name)
+  if lowered =~# 'error'
+    return 'error'
+  elseif lowered =~# 'warn'
+    return 'warning'
+  elseif lowered =~# 'info\|hint\|note'
+    return 'info'
+  elseif lowered =~# 'delete\|remove'
+    return 'delete'
+  elseif lowered =~# 'add\|new\|untracked'
+    return 'add'
+  elseif lowered =~# 'change\|modif'
+    return 'change'
+  endif
+  return 'other'
 enddef
 
 
@@ -789,8 +923,7 @@ def UpdateSigns(key: string)
     return
   endif
   var session = sessions[key]
-  DeleteMatch(key, 'sign_match')
-  session.sign_rows = []
+  ClearSignMatches(key)
   if !get(g:, 'simpleminimap_show_signs', 1)
       || !WindowExists(session.winid)
       || empty(session.rows)
@@ -809,19 +942,84 @@ def UpdateSigns(key: string)
     return
   endif
 
-  var positions: list<any> = []
-  var seen: dict<bool> = {}
+  var row_category: dict<string> = {}
   for sign in placed[0].signs
     var minimap_row = RowForSourceLine(session.rows, get(sign, 'lnum', 0))
+    if minimap_row <= 0
+      continue
+    endif
+    var category = SignCategory(get(sign, 'name', ''))
+    var row_key = string(minimap_row)
+    var existing = get(row_category, row_key, '')
+    if existing ==# '' || SIGN_PRIORITY[category] > SIGN_PRIORITY[existing]
+      row_category[row_key] = category
+    endif
+  endfor
+  if empty(row_category)
+    return
+  endif
+
+  var category_rows: dict<any> = {}
+  var all_rows: list<number> = []
+  for [row_key, category] in items(row_category)
+    if !has_key(category_rows, category)
+      category_rows[category] = []
+    endif
+    category_rows[category]->add(str2nr(row_key))
+    all_rows->add(str2nr(row_key))
+  endfor
+  session.sign_rows = sort(all_rows, 'n')
+  session.sign_categories = row_category
+  for [category, rows] in items(category_rows)
+    session.sign_matches->add(matchaddpos(SIGN_GROUPS[category], sort(rows, 'n'), 15, -1, {window: session.winid}))
+  endfor
+enddef
+
+
+def UpdateSearch(key: string, force: bool = false)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  var supported = exists('*matchbufline')
+  var enabled = supported && get(g:, 'simpleminimap_show_search', 1)
+  var state: list<any> = enabled
+    ? [v:hlsearch, @/, getbufvar(session.source_bufnr, 'changedtick', 0)]
+    : []
+  # [-1] is a sentinel no real state (empty, or [hlsearch, pattern, tick]) equals.
+  if !force && state ==# get(session, 'search_state', [-1])
+    return
+  endif
+  session.search_state = state
+  DeleteMatch(key, 'search_match')
+  session.search_rows = []
+  if !enabled || !v:hlsearch || @/ ==# ''
+      || empty(session.rows)
+      || !WindowExists(session.winid)
+      || !bufexists(session.source_bufnr)
+      || session.source_lines > SEARCH_MAX_LINES
+    return
+  endif
+
+  var matches: list<any> = []
+  try
+    matches = matchbufline(session.source_bufnr, @/, 1, '$')
+  catch
+    return
+  endtry
+  var positions: list<number> = []
+  var seen: dict<bool> = {}
+  for found in matches
+    var minimap_row = RowForSourceLine(session.rows, get(found, 'lnum', 0))
     var row_key = string(minimap_row)
     if minimap_row > 0 && !has_key(seen, row_key)
       seen[row_key] = true
       positions->add(minimap_row)
     endif
   endfor
-  session.sign_rows = copy(positions)
+  session.search_rows = sort(positions, 'n')
   if !empty(positions)
-    session.sign_match = matchaddpos('SimpleMinimapSign', positions, 15, -1, {window: session.winid})
+    session.search_match = matchaddpos('SimpleMinimapSearch', positions, 12, -1, {window: session.winid})
   endif
 enddef
 
@@ -902,6 +1100,7 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
 
   session.rows = rows
   session.source_lines = source_lines
+  session.last_signature = get(session, 'request_signature', '')
   session.render_count = get(session, 'render_count', 0) + 1
   var started = get(session, 'request_started', [])
   if type(started) == v:t_list && !empty(started)
@@ -912,6 +1111,7 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
   SetBufferLines(session.bufnr, output)
   UpdateSigns(key)
   UpdateViewport(key)
+  UpdateSearch(key, true)
   redrawstatus
 enddef
 
@@ -931,6 +1131,7 @@ def ConfigureMinimapWindow(winid: number, bufnr: number)
   setbufvar(bufnr, '&modified', 0)
 
   win_execute(winid, 'nnoremap <silent> <buffer> q <Cmd>SimpleMinimapClose<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> <Esc> <Cmd>call simpleminimap#FocusSource()<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> r <Cmd>SimpleMinimapRefresh<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> s <Cmd>SimpleMinimapStyle<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> + <Cmd>call simpleminimap#AdjustWidth(2)<CR>')
@@ -983,11 +1184,19 @@ def OpenForCurrentTab()
       timer: 0,
       viewport_match: -1,
       cursor_match: -1,
-      sign_match: -1,
+      search_match: -1,
+      sign_matches: [],
       sign_rows: [],
+      sign_categories: {},
+      search_rows: [],
+      search_state: [],
       preview_origin: [],
       request_started: [],
+      request_signature: '',
+      last_signature: '',
+      force_render: false,
       render_count: 0,
+      render_skips: 0,
       last_render_ms: -1.0,
     }
     ConfigureMinimapWindow(minimap_winid, minimap_bufnr)
@@ -1045,7 +1254,14 @@ export def SetupHighlights()
   highlight default link SimpleMinimapNormal Comment
   highlight default link SimpleMinimapViewport Visual
   highlight default link SimpleMinimapCursor Search
+  highlight default link SimpleMinimapSearch IncSearch
   highlight default link SimpleMinimapSign WarningMsg
+  highlight default link SimpleMinimapSignError ErrorMsg
+  highlight default link SimpleMinimapSignWarning WarningMsg
+  highlight default link SimpleMinimapSignInfo MoreMsg
+  highlight default link SimpleMinimapSignAdd DiffAdd
+  highlight default link SimpleMinimapSignChange DiffChange
+  highlight default link SimpleMinimapSignDelete DiffDelete
   highlight default link SimpleMinimapTitle Title
 enddef
 
@@ -1076,7 +1292,7 @@ enddef
 export def Refresh()
   var key = CurrentSessionKey()
   if key !=# ''
-    Schedule(key, 0)
+    Schedule(key, 0, true)
   endif
 enddef
 
@@ -1089,6 +1305,18 @@ export def Focus()
   endif
   if key !=# '' && has_key(sessions, key)
     win_gotoid(sessions[key].winid)
+  endif
+enddef
+
+
+export def FocusSource()
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
+    return
+  endif
+  var source_winid = sessions[key].source_winid
+  if WindowExists(source_winid)
+    win_gotoid(source_winid)
   endif
 enddef
 
@@ -1414,6 +1642,7 @@ export def OnCursorMoved(winid: number)
   for [key, session] in items(sessions)
     if get(session, 'source_winid', 0) == winid
       UpdateViewport(key)
+      UpdateSearch(key)
     endif
   endfor
 enddef
@@ -1426,6 +1655,7 @@ export def OnSignsChanged(bufnr: number)
   for [key, session] in items(sessions)
     if get(session, 'source_bufnr', -1) == bufnr
       UpdateSigns(key)
+      UpdateSearch(key)
     endif
   endfor
 enddef
@@ -1504,14 +1734,34 @@ enddef
 
 export def Health()
   var daemon = FindDaemon()
+  var daemon_version = 'unknown'
+  if daemon !=# ''
+    try
+      var version_output = systemlist(shellescape(daemon) .. ' --version')
+      if v:shell_error == 0 && !empty(version_output)
+        daemon_version = version_output[0]
+      endif
+    catch
+    endtry
+  endif
+  var search_supported = exists('*matchbufline')
   var checks = [
     printf('[%s] Vim version: %d', v:version >= 900 ? 'OK' : 'FAIL', v:version),
     printf('[%s] +job / +channel: %d / %d', has('job') && has('channel') ? 'OK' : 'FAIL', has('job'), has('channel')),
     printf('[%s] daemon: %s', daemon ==# '' ? 'FAIL' : 'OK', daemon ==# '' ? 'not found' : daemon),
+    printf('[INFO] daemon version: %s', daemon_version),
     printf('[%s] backend: %s, protocol v%d ready=%d', BackendRunning() ? 'OK' : 'INFO', BackendRunning() ? job_status(backend_job) : 'stopped', PROTOCOL_VERSION, backend_ready ? 1 : 0),
+    printf('[INFO] backend latency: %s', backend_latency_ms >= 0.0 ? printf('%.1fms', backend_latency_ms) : 'n/a'),
+    printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
     printf('[INFO] sessions: %d, pending requests: %d', len(sessions), len(requests)),
     printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
   ]
+  for [key, session] in items(sessions)
+    var last_render_ms = get(session, 'last_render_ms', -1.0)
+    checks->add(printf('[INFO] session %s: renders=%d cache-skips=%d last=%s', key,
+      get(session, 'render_count', 0), get(session, 'render_skips', 0),
+      last_render_ms >= 0.0 ? printf('%.0fms', last_render_ms) : 'n/a'))
+  endfor
   if backend_error !=# ''
     checks->add('[WARN] last backend error: ' .. backend_error)
   endif
@@ -1528,6 +1778,7 @@ export def DebugStatus(): dict<any>
     backend_ready: backend_ready,
     backend_error: backend_error,
     backend_restart_attempts: backend_restart_attempts,
+    backend_latency_ms: backend_latency_ms,
     pending_requests: deepcopy(requests),
   }
 enddef

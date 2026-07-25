@@ -64,13 +64,36 @@ call assert_equal(3, session.rows[0].end)
 call assert_true(session.viewport_match > 0)
 call assert_true(session.cursor_match > 0)
 
-" Signs from Git/LSP-style integrations are projected onto minimap rows.
+" Signs from Git/LSP-style integrations are projected onto minimap rows and
+" classified by severity: the error sign outranks the generic one on row 2.
 call sign_define('SimpleMinimapTestSign', {'text': '!', 'texthl': 'WarningMsg'})
+call sign_define('SimpleMinimapTestErrorSign', {'text': 'E', 'texthl': 'ErrorMsg'})
 call sign_place(1, 'SimpleMinimapTests', 'SimpleMinimapTestSign', s:source_bufnr, {'lnum': 5})
+call sign_place(2, 'SimpleMinimapTests', 'SimpleMinimapTestErrorSign', s:source_bufnr, {'lnum': 5})
+call sign_place(3, 'SimpleMinimapTests', 'SimpleMinimapTestSign', s:source_bufnr, {'lnum': 1})
 call simpleminimap#OnSignsChanged(s:source_bufnr)
 let session = values(simpleminimap#DebugStatus().sessions)[0]
-call assert_equal([2], session.sign_rows)
-call assert_true(session.sign_match > 0)
+call assert_equal([1, 2], session.sign_rows)
+call assert_equal('other', session.sign_categories['1'])
+call assert_equal('error', session.sign_categories['2'])
+call assert_equal(2, len(session.sign_matches))
+
+" Search matches are projected onto minimap rows while hlsearch is active.
+if exists('*matchbufline')
+  set hlsearch
+  let @/ = 'answer'
+  let v:hlsearch = 1
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  let session = values(simpleminimap#DebugStatus().sessions)[0]
+  call assert_equal([1], session.search_rows)
+  call assert_true(session.search_match > 0)
+  let v:hlsearch = 0
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  let session = values(simpleminimap#DebugStatus().sessions)[0]
+  call assert_equal([], session.search_rows)
+  set nohlsearch
+endif
+let session = values(simpleminimap#DebugStatus().sessions)[0]
 
 " A click arriving while the source owns focus still reaches the minimap's
 " buffer-local mouse mapping and jumps through the release handler.
@@ -120,6 +143,13 @@ SimpleMinimapFocus
 call cursor(2, 1)
 silent SimpleMinimapHealth
 
+" <Esc> is mapped inside the minimap and returns focus to the source window.
+call assert_notequal('', maparg("\<Esc>", 'n'))
+call simpleminimap#FocusSource()
+call assert_equal(s:source_winid, win_getid())
+SimpleMinimapFocus
+call cursor(2, 1)
+
 " The second minimap row represents source lines 4..6; jumping lands at its midpoint.
 call simpleminimap#Jump()
 call assert_equal(s:source_winid, win_getid())
@@ -134,6 +164,30 @@ while values(simpleminimap#DebugStatus().sessions)[0].request_id <= s:old_reques
   sleep 20m
   let s:attempt += 1
 endwhile
+call assert_true(values(simpleminimap#DebugStatus().sessions)[0].request_id > s:old_request)
+
+" Wait until that render is applied, then verify the signature cache: an
+" unchanged buffer produces an identical request and skips the daemon.
+let s:attempt = 0
+while s:attempt < 150
+  let s:state = values(simpleminimap#DebugStatus().sessions)[0]
+  if s:state.request_signature !=# '' && s:state.last_signature ==# s:state.request_signature
+    break
+  endif
+  sleep 20m
+  let s:attempt += 1
+endwhile
+let s:state = values(simpleminimap#DebugStatus().sessions)[0]
+let s:old_request = s:state.request_id
+let s:old_skips = s:state.render_skips
+call simpleminimap#OnTextChanged(s:source_bufnr)
+let s:state = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_equal(s:old_request, s:state.request_id)
+call assert_true(s:state.render_skips > s:old_skips)
+
+" A forced refresh bypasses the cache and issues a real request.
+call win_gotoid(s:source_winid)
+SimpleMinimapRefresh
 call assert_true(values(simpleminimap#DebugStatus().sessions)[0].request_id > s:old_request)
 
 " An explicit backend restart preserves the session and renders again.
@@ -152,6 +206,7 @@ SimpleMinimapClose
 call assert_equal(0, len(simpleminimap#DebugStatus().sessions))
 call sign_unplace('SimpleMinimapTests', {'buffer': s:source_bufnr})
 call sign_undefine('SimpleMinimapTestSign')
+call sign_undefine('SimpleMinimapTestErrorSign')
 call simpleminimap#Stop()
 call delete(s:crash_marker)
 

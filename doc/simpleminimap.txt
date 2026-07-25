@@ -50,7 +50,8 @@ Both values must be 1.
         Close the minimap in the current tab.
 
 :SimpleMinimapRefresh                               *:SimpleMinimapRefresh*
-        Render immediately, bypassing the normal edit debounce.
+        Render immediately, bypassing the normal edit debounce and the
+        render signature cache.
 
 :SimpleMinimapFocus                                   *:SimpleMinimapFocus*
         Focus the minimap window.  Open it first when necessary.
@@ -68,7 +69,9 @@ Both values must be 1.
 
 :SimpleMinimapHealth                                *:SimpleMinimapHealth*
         Show categorized Vim, daemon, protocol, session and configuration
-        checks, including the last backend error when present.
+        checks, including the daemon version, the measured backend round-trip
+        latency, search projection support, per-session render statistics and
+        the last backend error when present.
 
 :SimpleMinimapDebug                                 *:SimpleMinimapDebug*
         Echo the complete internal state dictionary.
@@ -93,6 +96,7 @@ Inside the minimap buffer:
   r           Refresh immediately.
   s           Cycle the render style.
   + / -       Grow or shrink the minimap by two columns.
+  <Esc>       Return focus to the tracked source window.
   q           Close the minimap.
 
 Mouse actions require the relevant Vim mouse events, normally via: >
@@ -139,7 +143,16 @@ All options must be set before the plugin is loaded.
 
 *g:simpleminimap_show_signs*
         Boolean number, default 1.  Project signs placed in the tracked buffer
-        by Git, LSP, lint and other integrations onto minimap rows.
+        by Git, LSP, lint and other integrations onto minimap rows.  Signs are
+        classified by name into error, warning, info, git add/change/delete
+        and other categories; when several signs share a minimap row the most
+        severe category wins.
+
+*g:simpleminimap_show_search*
+        Boolean number, default 1.  Project the active 'hlsearch' matches of
+        the last search pattern onto minimap rows.  Requires |matchbufline()|
+        (Vim 9.1.0009 or newer); silently disabled otherwise.  Buffers above
+        100000 lines are skipped.
 
 *g:simpleminimap_ignore_filetypes*
         List of strings, default empty.  Windows whose buffer 'filetype' is in
@@ -170,11 +183,20 @@ All options must be set before the plugin is loaded.
 ==============================================================================
 6. HIGHLIGHTS                                             *simpleminimap-highlights*
 
-*SimpleMinimapNormal*     Minimap text.  Defaults to Comment.
-*SimpleMinimapViewport*   Source viewport range.  Defaults to Visual.
-*SimpleMinimapCursor*     Source cursor range.  Defaults to Search.
-*SimpleMinimapSign*       Aggregated source signs.  Defaults to WarningMsg.
-*SimpleMinimapTitle*      Statusline title.  Defaults to Title.
+*SimpleMinimapNormal*       Minimap text.  Defaults to Comment.
+*SimpleMinimapViewport*     Source viewport range.  Defaults to Visual.
+*SimpleMinimapCursor*       Source cursor range.  Defaults to Search.
+*SimpleMinimapSearch*       Rows containing search matches.  Defaults to
+                            IncSearch.
+*SimpleMinimapSign*         Uncategorized source signs.  Defaults to
+                            WarningMsg.
+*SimpleMinimapSignError*    Error-like signs.  Defaults to ErrorMsg.
+*SimpleMinimapSignWarning*  Warning-like signs.  Defaults to WarningMsg.
+*SimpleMinimapSignInfo*     Info/hint/note signs.  Defaults to MoreMsg.
+*SimpleMinimapSignAdd*      Added-line signs.  Defaults to DiffAdd.
+*SimpleMinimapSignChange*   Changed-line signs.  Defaults to DiffChange.
+*SimpleMinimapSignDelete*   Deleted-line signs.  Defaults to DiffDelete.
+*SimpleMinimapTitle*        Statusline title.  Defaults to Title.
 
 The defaults are recreated after |ColorScheme|.  Define the groups in your own
 ColorScheme autocommand to override them.
@@ -199,6 +221,17 @@ Every request has a monotonically increasing ID.  Vim applies a response only
 when it is still the newest request for that session.  It waits for the READY
 handshake, validates response ranges and dimensions, and coalesces obsolete
 requests.  Unexpected backend exits use bounded automatic restart attempts.
+In the daemon a new begin record supersedes an unfinished request instead of
+failing, which keeps recovery simple after interrupted writes.
+
+Each request body is hashed (|sha256()|) before it is sent.  When the
+signature matches the last applied render, the daemon round-trip is skipped
+and only the viewport, cursor, sign and search overlays are refreshed.
+|:SimpleMinimapRefresh| bypasses this cache.
+
+Sign and search projection are overlays implemented with |matchaddpos()| in
+the minimap window; they never modify the rendered text and are recomputed
+lazily from cached state on cursor movement and |CursorHold|.
 
 ==============================================================================
 8. TROUBLESHOOTING                                   *simpleminimap-troubleshooting*
