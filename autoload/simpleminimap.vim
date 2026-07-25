@@ -1,6 +1,6 @@
 vim9script
 
-const PROTOCOL_VERSION = 1
+const PROTOCOL_VERSION = 2
 const MIN_RENDER_HEIGHT = 1
 const MAX_BACKEND_RESTARTS = 3
 # Search projection scans the whole source buffer; skip absurdly large ones.
@@ -23,6 +23,12 @@ const SIGN_GROUPS = {
   change: 'SimpleMinimapSignChange',
   add: 'SimpleMinimapSignAdd',
   other: 'SimpleMinimapSign',
+}
+# Density shade classes reported per rendered cell by the daemon.
+const SHADE_TYPES = {
+  '1': 'SimpleMinimapShadeLow',
+  '2': 'SimpleMinimapShadeMid',
+  '3': 'SimpleMinimapShadeHigh',
 }
 var plugin_root = fnamemodify(expand('<sfile>:p'), ':h:h')
 
@@ -310,7 +316,7 @@ def BackendOut(_channel: channel, message: string)
       rows: [],
     }
   elseif fields[0] ==# 'R'
-    if len(fields) != 5 || !has_key(incoming, request_key)
+    if len(fields) != 6 || !has_key(incoming, request_key)
       RejectResponse(request_key, 'row without a valid response header')
       return
     endif
@@ -323,6 +329,7 @@ def BackendOut(_channel: channel, message: string)
     var end_line = str2nr(fields[3])
     var expected_start = empty(response.rows) ? 1 : response.rows[-1].end + 1
     var text = DecodeField(fields[4])
+    var shade = fields[5]
     if start_line != expected_start || end_line < start_line || end_line > response.source_lines
       RejectResponse(request_key, 'non-contiguous response row range')
       return
@@ -331,7 +338,11 @@ def BackendOut(_channel: channel, message: string)
       RejectResponse(request_key, 'response row exceeds declared limits')
       return
     endif
-    response.rows->add({start: start_line, end: end_line, text: text})
+    if shade !~# '^[0-3]\+$' || strlen(shade) != strchars(text)
+      RejectResponse(request_key, 'malformed response shade data')
+      return
+    endif
+    response.rows->add({start: start_line, end: end_line, text: text, shade: shade})
   elseif fields[0] ==# 'E'
     if len(fields) != 2 || !has_key(incoming, request_key)
       RejectResponse(request_key, 'render end without a valid response')
@@ -601,6 +612,7 @@ def RenderMessage(key: string, message_lines: list<string>)
   session.source_lines = 0
   session.last_signature = ''
   SetBufferLines(session.bufnr, output)
+  ClearShading(key)
   ClearMatches(key)
 enddef
 
@@ -867,6 +879,86 @@ def DeleteMatch(key: string, field: string)
 enddef
 
 
+def ShadingEnabled(): bool
+  return get(g:, 'simpleminimap_shading', 1) != 0 && has('textprop') == 1
+enddef
+
+
+def EnsureShadeProps()
+  for type_name in values(SHADE_TYPES)
+    if empty(prop_type_get(type_name))
+      prop_type_add(type_name, {highlight: type_name})
+    endif
+  endfor
+enddef
+
+
+def ClearShading(key: string)
+  if !has_key(sessions, key) || has('textprop') != 1
+    return
+  endif
+  var session = sessions[key]
+  if !bufexists(session.bufnr)
+    return
+  endif
+  for type_name in values(SHADE_TYPES)
+    if !empty(prop_type_get(type_name))
+      try
+        prop_remove({type: type_name, bufnr: session.bufnr, all: true}, 1, max([1, get(getbufinfo(session.bufnr)[0], 'linecount', 1)]))
+      catch
+      endtry
+    endif
+  endfor
+enddef
+
+
+def ApplyShading(key: string, output: list<string>)
+  if !has_key(sessions, key) || !ShadingEnabled()
+    return
+  endif
+  var session = sessions[key]
+  if !bufexists(session.bufnr)
+    return
+  endif
+  EnsureShadeProps()
+  ClearShading(key)
+  var lnum = 0
+  for row in session.rows
+    lnum += 1
+    if lnum > len(output)
+      break
+    endif
+    var text = output[lnum - 1]
+    var shade = get(row, 'shade', '')
+    var limit = min([strlen(shade), strchars(text)])
+    var cell = 0
+    while cell < limit
+      var class = shade[cell]
+      if class ==# '0'
+        cell += 1
+        continue
+      endif
+      var run_start = cell
+      while cell < limit && shade[cell] ==# class
+        cell += 1
+      endwhile
+      var byte_start = byteidx(text, run_start)
+      var byte_end = byteidx(text, cell)
+      if byte_start >= 0 && byte_end > byte_start
+        try
+          prop_add(lnum, byte_start + 1, {
+            length: byte_end - byte_start,
+            type: SHADE_TYPES[class],
+            bufnr: session.bufnr,
+          })
+        catch
+        endtry
+      endif
+    endwhile
+  endfor
+enddef
+
+
 def ClearSignMatches(key: string)
   if !has_key(sessions, key)
     return
@@ -1109,6 +1201,7 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
   backend_restart_attempts = 0
   backend_error = ''
   SetBufferLines(session.bufnr, output)
+  ApplyShading(key, output)
   UpdateSigns(key)
   UpdateViewport(key)
   UpdateSearch(key, true)
@@ -1262,6 +1355,9 @@ export def SetupHighlights()
   highlight default link SimpleMinimapSignAdd DiffAdd
   highlight default link SimpleMinimapSignChange DiffChange
   highlight default link SimpleMinimapSignDelete DiffDelete
+  highlight default link SimpleMinimapShadeLow NonText
+  highlight default link SimpleMinimapShadeMid Comment
+  highlight default link SimpleMinimapShadeHigh Normal
   highlight default link SimpleMinimapTitle Title
 enddef
 
@@ -1418,7 +1514,15 @@ export def Statusline(): string
   var state = backend_ready ? '' : ' !'
   var last_render_ms = get(session, 'last_render_ms', -1.0)
   var timing = last_render_ms >= 0.0 ? printf(' · %.0fms', last_render_ms) : ''
-  return printf(' %s · %s%s%s ', label, style, timing, state)
+  var position = ''
+  var source_lines = get(session, 'source_lines', 0)
+  if source_lines > 0 && WindowExists(get(session, 'source_winid', 0))
+    var cursor_pos = getcurpos(session.source_winid)
+    if len(cursor_pos) > 1
+      position = printf(' · %d%%', min([100, (cursor_pos[1] * 100 + source_lines - 1) / source_lines]))
+    endif
+  endif
+  return printf(' %s · %s%s%s%s ', label, style, position, timing, state)
 enddef
 
 
@@ -1753,6 +1857,7 @@ export def Health()
     printf('[%s] backend: %s, protocol v%d ready=%d', BackendRunning() ? 'OK' : 'INFO', BackendRunning() ? job_status(backend_job) : 'stopped', PROTOCOL_VERSION, backend_ready ? 1 : 0),
     printf('[INFO] backend latency: %s', backend_latency_ms >= 0.0 ? printf('%.1fms', backend_latency_ms) : 'n/a'),
     printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
+    printf('[%s] density shading: %s', ShadingEnabled() ? 'OK' : 'INFO', ShadingEnabled() ? 'enabled' : (has('textprop') == 1 ? 'disabled by g:simpleminimap_shading' : 'needs +textprop')),
     printf('[INFO] sessions: %d, pending requests: %d', len(sessions), len(requests)),
     printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
   ]

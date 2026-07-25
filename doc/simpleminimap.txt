@@ -154,6 +154,13 @@ All options must be set before the plugin is loaded.
         (Vim 9.1.0009 or newer); silently disabled otherwise.  Buffers above
         100000 lines are skipped.
 
+*g:simpleminimap_shading*
+        Boolean number, default 1.  Shade every rendered minimap cell by its
+        code density using text properties: sparse cells use
+        |SimpleMinimapShadeLow|, average cells |SimpleMinimapShadeMid| and
+        dense cells |SimpleMinimapShadeHigh|.  Requires +textprop; silently
+        disabled otherwise.
+
 *g:simpleminimap_ignore_filetypes*
         List of strings, default empty.  Windows whose buffer 'filetype' is in
         the list are not eligible source windows.
@@ -196,6 +203,9 @@ All options must be set before the plugin is loaded.
 *SimpleMinimapSignAdd*      Added-line signs.  Defaults to DiffAdd.
 *SimpleMinimapSignChange*   Changed-line signs.  Defaults to DiffChange.
 *SimpleMinimapSignDelete*   Deleted-line signs.  Defaults to DiffDelete.
+*SimpleMinimapShadeLow*     Sparse density cells.  Defaults to NonText.
+*SimpleMinimapShadeMid*     Average density cells.  Defaults to Comment.
+*SimpleMinimapShadeHigh*    Dense cells.  Defaults to Normal.
 *SimpleMinimapTitle*        Statusline title.  Defaults to Title.
 
 The defaults are recreated after |ColorScheme|.  Define the groups in your own
@@ -232,6 +242,12 @@ and only the viewport, cursor, sign and search overlays are refreshed.
 Sign and search projection are overlays implemented with |matchaddpos()| in
 the minimap window; they never modify the rendered text and are recomputed
 lazily from cached state on cursor movement and |CursorHold|.
+
+With protocol version 2 the daemon reports one density digit per rendered
+cell alongside each row.  Vim converts contiguous runs of equal density into
+text properties so that dense code appears brighter than sparse code.  The
+minimap statusline additionally shows the cursor position as a percentage of
+the source buffer.
 
 ==============================================================================
 8. TROUBLESHOOTING                                   *simpleminimap-troubleshooting*

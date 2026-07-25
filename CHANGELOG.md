@@ -2,6 +2,17 @@
 
 All notable changes to SimpleMinimap are documented here.
 
+## 0.4.0
+
+- Protocol v2: the daemon reports a density digit (0..3) per rendered cell
+  alongside each row.
+- Shade every minimap cell by code density with text properties: dense code
+  renders brighter than sparse code through the new `SimpleMinimapShadeLow`,
+  `SimpleMinimapShadeMid` and `SimpleMinimapShadeHigh` highlight groups
+  (`g:simpleminimap_shading`, requires `+textprop`).
+- Show the source cursor position as a percentage in the minimap statusline.
+- Report density-shading support in `:SimpleMinimapHealth`.
+
 ## 0.3.0
 
 - Project active `hlsearch` matches onto the minimap through

@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{self, BufRead, Write};
 
-const PROTOCOL_VERSION: u32 = 1;
+const PROTOCOL_VERSION: u32 = 2;
 const MAX_WIDTH: usize = 256;
 const MAX_HEIGHT: usize = 2_000;
 const MAX_COLUMNS: usize = 1_000;
@@ -407,6 +407,13 @@ fn parse_usize(fields: &[&str], index: usize, id: u64, name: &str) -> Result<usi
         .map_err(|_| (id, format!("invalid {name}")))
 }
 
+struct RenderedRow {
+    text: String,
+    // One ASCII digit per rendered cell classifying its ink density,
+    // used by the frontend for brightness shading: 0 empty, 1..3 dense.
+    shade: String,
+}
+
 fn render_and_write<W: Write>(out: &mut W, request: RenderRequest) -> Result<(), String> {
     let rows = render(&request);
     writeln!(
@@ -417,14 +424,15 @@ fn render_and_write<W: Write>(out: &mut W, request: RenderRequest) -> Result<(),
         rows.len()
     )
     .map_err(|e| e.to_string())?;
-    for (group, text) in request.groups.iter().zip(rows.iter()) {
+    for (group, row) in request.groups.iter().zip(rows.iter()) {
         writeln!(
             out,
-            "R\t{}\t{}\t{}\t{}",
+            "R\t{}\t{}\t{}\t{}\t{}",
             request.id,
             group.start,
             group.end,
-            encode_field(text)
+            encode_field(&row.text),
+            row.shade
         )
         .map_err(|e| e.to_string())?;
     }
@@ -433,7 +441,7 @@ fn render_and_write<W: Write>(out: &mut W, request: RenderRequest) -> Result<(),
     Ok(())
 }
 
-fn render(request: &RenderRequest) -> Vec<String> {
+fn render(request: &RenderRequest) -> Vec<RenderedRow> {
     let mut prepared: Vec<Vec<Vec<bool>>> = Vec::with_capacity(request.groups.len());
     let mut max_used = 0usize;
 
@@ -484,8 +492,14 @@ fn line_occupancy(text: &str, max_columns: usize, tabstop: usize) -> (Vec<bool>,
     (occupied, used)
 }
 
-fn render_row(samples: &[Vec<bool>], width: usize, scale: usize, style: RenderStyle) -> String {
+fn render_row(
+    samples: &[Vec<bool>],
+    width: usize,
+    scale: usize,
+    style: RenderStyle,
+) -> RenderedRow {
     let mut output = String::with_capacity(width.saturating_mul(3));
+    let mut shade = String::with_capacity(width);
     for cell in 0..width {
         let mut mask = 0u8;
         let mut density = 0usize;
@@ -511,8 +525,21 @@ fn render_row(samples: &[Vec<bool>], width: usize, scale: usize, style: RenderSt
             RenderStyle::Ascii => density_glyph(density, false),
         };
         output.push(ch);
+        shade.push(shade_digit(density));
     }
-    output
+    RenderedRow {
+        text: output,
+        shade,
+    }
+}
+
+fn shade_digit(density: usize) -> char {
+    match density {
+        0 => '0',
+        1..=2 => '1',
+        3..=5 => '2',
+        _ => '3',
+    }
 }
 
 fn has_ink(row: &[bool], logical_dot: usize, scale: usize) -> bool {
@@ -635,7 +662,13 @@ fn self_test() -> Result<(), String> {
         ],
     };
     let rows = render(&request);
-    if rows.len() != 2 || rows.iter().any(|row| row.chars().count() != 8) {
+    if rows.len() != 2
+        || rows.iter().any(|row| {
+            row.text.chars().count() != 8
+                || row.shade.len() != 8
+                || !row.shade.bytes().all(|byte| (b'0'..=b'3').contains(&byte))
+        })
+    {
         return Err("renderer returned the wrong dimensions".to_string());
     }
     let escaped = "a%\tb\n中";
@@ -690,23 +723,29 @@ mod tests {
         };
         let rows = render(&request);
         assert_eq!(rows.len(), 1);
-        assert_eq!(rows[0].chars().count(), 12);
+        assert_eq!(rows[0].text.chars().count(), 12);
+        assert_eq!(rows[0].shade.len(), 12);
+        assert!(rows[0]
+            .shade
+            .bytes()
+            .all(|byte| (b'0'..=b'3').contains(&byte)));
+        assert!(rows[0].shade.bytes().any(|byte| byte != b'0'));
     }
     #[test]
     fn begin_rejects_empty_source_or_group_set() {
-        let empty_source = ["B", "1", "8", "4", "80", "4", "braille", "0", "1", "1"];
+        let empty_source = ["B", "1", "8", "4", "80", "4", "braille", "0", "1", "2"];
         assert!(parse_begin(&empty_source).is_err());
 
-        let empty_groups = ["B", "1", "8", "4", "80", "4", "braille", "4", "0", "1"];
+        let empty_groups = ["B", "1", "8", "4", "80", "4", "braille", "4", "0", "2"];
         assert!(parse_begin(&empty_groups).is_err());
 
-        let bad_style = ["B", "1", "8", "4", "80", "4", "pixels", "4", "1", "1"];
+        let bad_style = ["B", "1", "8", "4", "80", "4", "pixels", "4", "1", "2"];
         assert!(parse_begin(&bad_style).is_err());
     }
 
     #[test]
     fn groups_must_be_contiguous_and_bounded() {
-        let fields = ["B", "9", "8", "2", "8", "4", "braille", "8", "2", "1"];
+        let fields = ["B", "9", "8", "2", "8", "4", "braille", "8", "2", "2"];
         let mut request = parse_begin(&fields).expect("valid begin");
         let first = ["G", "9", "1", "4", "abc", "", "", ""];
         parse_group(&first, Some(&mut request)).expect("valid first group");
@@ -723,13 +762,13 @@ mod tests {
         let mut pending: Option<RenderRequest> = None;
         let mut out: Vec<u8> = Vec::new();
         handle_record(
-            "B\t1\t8\t4\t80\t4\tbraille\t4\t1\t1",
+            "B\t1\t8\t4\t80\t4\tbraille\t4\t1\t2",
             &mut pending,
             &mut out,
         )
         .unwrap();
         handle_record(
-            "B\t2\t8\t4\t80\t4\tbraille\t4\t1\t1",
+            "B\t2\t8\t4\t80\t4\tbraille\t4\t1\t2",
             &mut pending,
             &mut out,
         )

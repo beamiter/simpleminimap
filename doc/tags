@@ -13,6 +13,9 @@
 SimpleMinimapCursor	simpleminimap.txt	/*SimpleMinimapCursor*
 SimpleMinimapNormal	simpleminimap.txt	/*SimpleMinimapNormal*
 SimpleMinimapSearch	simpleminimap.txt	/*SimpleMinimapSearch*
+SimpleMinimapShadeHigh	simpleminimap.txt	/*SimpleMinimapShadeHigh*
+SimpleMinimapShadeLow	simpleminimap.txt	/*SimpleMinimapShadeLow*
+SimpleMinimapShadeMid	simpleminimap.txt	/*SimpleMinimapShadeMid*
 SimpleMinimapSign	simpleminimap.txt	/*SimpleMinimapSign*
 SimpleMinimapSignAdd	simpleminimap.txt	/*SimpleMinimapSignAdd*
 SimpleMinimapSignChange	simpleminimap.txt	/*SimpleMinimapSignChange*
@@ -34,6 +37,7 @@ g:simpleminimap_mouse_scroll_lines	simpleminimap.txt	/*g:simpleminimap_mouse_scr
 g:simpleminimap_render_style	simpleminimap.txt	/*g:simpleminimap_render_style*
 g:simpleminimap_sampling	simpleminimap.txt	/*g:simpleminimap_sampling*
 g:simpleminimap_set_default_mapping	simpleminimap.txt	/*g:simpleminimap_set_default_mapping*
+g:simpleminimap_shading	simpleminimap.txt	/*g:simpleminimap_shading*
 g:simpleminimap_show_search	simpleminimap.txt	/*g:simpleminimap_show_search*
 g:simpleminimap_show_signs	simpleminimap.txt	/*g:simpleminimap_show_signs*
 g:simpleminimap_show_statusline	simpleminimap.txt	/*g:simpleminimap_show_statusline*

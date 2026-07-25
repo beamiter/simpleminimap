@@ -2,7 +2,7 @@
 import os
 import sys
 
-PROTOCOL = 1
+PROTOCOL = 2
 
 
 def encode(value: str) -> str:
@@ -53,7 +53,8 @@ for raw in sys.stdin:
         for index, (start, end) in enumerate(pending['groups']):
             marker = str((index + 1) % 10)
             text = marker * pending['width']
-            emit(f'R\t{request_id}\t{start}\t{end}\t{encode(text)}')
+            shade = '2' * pending['width']
+            emit(f'R\t{request_id}\t{start}\t{end}\t{encode(text)}\t{shade}')
         emit(f'E\t{request_id}')
         pending = None
     elif command == 'P':

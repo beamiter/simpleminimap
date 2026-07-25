@@ -1,6 +1,6 @@
 [package]
 name = "simpleminimap"
-version = "0.3.0"
+version = "0.4.0"
 edition = "2021"
 rust-version = "1.70"
 description = "A tiny asynchronous minimap renderer for Vim 9"

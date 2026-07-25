@@ -64,6 +64,13 @@ call assert_equal(3, session.rows[0].end)
 call assert_true(session.viewport_match > 0)
 call assert_true(session.cursor_match > 0)
 
+" Density shading attaches text properties to the rendered minimap cells.
+if has('textprop')
+  let s:props = prop_list(1, {'bufnr': session.bufnr})
+  call assert_true(len(s:props) > 0)
+  call assert_match('^SimpleMinimapShade\(Low\|Mid\|High\)$', s:props[0].type)
+endif
+
 " Signs from Git/LSP-style integrations are projected onto minimap rows and
 " classified by severity: the error sign outranks the generic one on row 2.
 call sign_define('SimpleMinimapTestSign', {'text': '!', 'texthl': 'WarningMsg'})
@@ -128,6 +135,7 @@ call assert_equal('ascii', g:simpleminimap_render_style)
 SimpleMinimapStyle
 call assert_equal('braille', g:simpleminimap_render_style)
 call assert_match('braille', simpleminimap#Statusline())
+call assert_match('\d\+%', simpleminimap#Statusline())
 call assert_equal(['braille', 'blocks', 'ascii'], simpleminimap#CompleteStyle('', '', 0))
 
 " Preview follows a minimap row but intentionally keeps minimap focus.
