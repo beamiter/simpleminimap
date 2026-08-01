@@ -4,6 +4,11 @@ All notable changes to SimpleMinimap are documented here.
 
 ## Unreleased - 2026-08-01
 
+### 构建与 CI 修复
+
+- CI 的 MSRV 作业固定在 Rust 1.70,而本 crate 自 0.5.0 起就是 edition 2024 / `rust-version = 1.85`;该作业自那时起一直失败。现已对齐到 1.85。
+- 修复 `doc/simpleminimap.txt` 中重复的 help tag(`:SimpleMinimapHealth`、`:SimpleMinimapRestart`)。
+
 ### 新增
 
 - `:SimpleMinimapLog`:后端事件进入环形缓冲区,启动与崩溃时的关键信息不再

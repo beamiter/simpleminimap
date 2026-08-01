@@ -297,13 +297,11 @@ What it guarantees:
 - Requests are correlated to replies by id and can time out, so a wedged
   daemon never leaves a callback hanging.
 
-                                                      *:SimpleMinimapHealth*
 :SimpleMinimapHealth
         Report daemon path, run state, negotiated protocol and capabilities,
         uptime, crash and restart counts, and whether the crash-loop breaker
         has tripped, alongside this plugin's own diagnostics.
 
-                                                      *:SimpleMinimapRestart*
 :SimpleMinimapRestart
         Stop the daemon and start a fresh one. Clears the crash-loop breaker,
         so this is the way back after repeated failures.
