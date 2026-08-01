@@ -70,6 +70,7 @@ command! -nargs=? SimpleMinimapResize simpleminimap#Resize(<q-args>)
 command! -nargs=? -complete=customlist,simpleminimap#CompleteStyle SimpleMinimapStyle simpleminimap#SetStyle(<q-args>)
 command! SimpleMinimapHealth simpleminimap#Health()
 command! SimpleMinimapDebug echo simpleminimap#DebugStatus()
+command! SimpleMinimapLog call simpleminimap#ShowLog()
 
 nnoremap <silent> <Plug>(simpleminimap-toggle) <Cmd>SimpleMinimap<CR>
 nnoremap <silent> <Plug>(simpleminimap-focus) <Cmd>SimpleMinimapFocus<CR>

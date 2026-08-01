@@ -51,10 +51,27 @@ var ping_started: any = []
 var backend_latency_ms = -1.0
 
 
+# Kept as a ring buffer, not just an echo: the interesting backend events
+# happen during startup and crashes, long before a user thinks to switch
+# g:simpleminimap_debug on.
+var log_ring: list<string> = []
+
 def Log(message: string)
+  log_ring->add(strftime('%H:%M:%S') .. ' ' .. message)
+  if len(log_ring) > 500
+    log_ring = log_ring[-300 : ]
+  endif
   if get(g:, 'simpleminimap_debug', 0)
     echom '[SimpleMinimap] ' .. message
   endif
+enddef
+
+export def ShowLog(): void
+  new
+  setlocal buftype=nofile bufhidden=wipe noswapfile
+  setline(1, empty(log_ring) ? ['(no log entries)'] : log_ring)
+  setlocal nomodifiable
+  normal! G
 enddef
 
 

@@ -3,9 +3,12 @@
 :SimpleMinimapDebug	simpleminimap.txt	/*:SimpleMinimapDebug*
 :SimpleMinimapFocus	simpleminimap.txt	/*:SimpleMinimapFocus*
 :SimpleMinimapHealth	simpleminimap.txt	/*:SimpleMinimapHealth*
+:SimpleMinimapHealth	simpleminimap.txt	/*:SimpleMinimapHealth*
+:SimpleMinimapLog	simpleminimap.txt	/*:SimpleMinimapLog*
 :SimpleMinimapOpen	simpleminimap.txt	/*:SimpleMinimapOpen*
 :SimpleMinimapRefresh	simpleminimap.txt	/*:SimpleMinimapRefresh*
 :SimpleMinimapResize	simpleminimap.txt	/*:SimpleMinimapResize*
+:SimpleMinimapRestart	simpleminimap.txt	/*:SimpleMinimapRestart*
 :SimpleMinimapRestart	simpleminimap.txt	/*:SimpleMinimapRestart*
 :SimpleMinimapStyle	simpleminimap.txt	/*:SimpleMinimapStyle*
 <Plug>(simpleminimap-focus)	simpleminimap.txt	/*<Plug>(simpleminimap-focus)*
@@ -45,6 +48,7 @@ g:simpleminimap_side	simpleminimap.txt	/*g:simpleminimap_side*
 g:simpleminimap_width	simpleminimap.txt	/*g:simpleminimap_width*
 simpleminimap-commands	simpleminimap.txt	/*simpleminimap-commands*
 simpleminimap-contents	simpleminimap.txt	/*simpleminimap-contents*
+simpleminimap-daemon	simpleminimap.txt	/*simpleminimap-daemon*
 simpleminimap-design	simpleminimap.txt	/*simpleminimap-design*
 simpleminimap-highlights	simpleminimap.txt	/*simpleminimap-highlights*
 simpleminimap-introduction	simpleminimap.txt	/*simpleminimap-introduction*

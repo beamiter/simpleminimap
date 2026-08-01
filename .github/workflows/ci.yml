@@ -40,3 +40,9 @@ jobs:
           target/release/simpleminimap-daemon --self-test
           SIMPLEMINIMAP_TEST_DAEMON="$PWD/target/release/simpleminimap-daemon" \
             vim -Nu NONE -n -es -S tests/vim_integration.vim
+
+      - name: Compile every Vim9 def (lazy compilation hides cold-branch errors)
+        run: make defcompile
+
+      - name: simplecore supervisor regression suite
+        run: make vim-core
