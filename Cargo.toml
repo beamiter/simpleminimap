@@ -2,7 +2,7 @@
 name = "simpleminimap"
 version = "0.5.0"
 edition = "2024"
-rust-version = "1.85"
+rust-version = "1.88"
 description = "A tiny asynchronous minimap renderer for Vim 9"
 license = "MIT"
 repository = "https://github.com/beamiter/simpleminimap"

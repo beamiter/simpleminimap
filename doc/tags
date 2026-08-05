@@ -47,11 +47,13 @@ g:simpleminimap_width	simpleminimap.txt	/*g:simpleminimap_width*
 simpleminimap-commands	simpleminimap.txt	/*simpleminimap-commands*
 simpleminimap-contents	simpleminimap.txt	/*simpleminimap-contents*
 simpleminimap-daemon	simpleminimap.txt	/*simpleminimap-daemon*
+simpleminimap-daemon-cli	simpleminimap.txt	/*simpleminimap-daemon-cli*
 simpleminimap-design	simpleminimap.txt	/*simpleminimap-design*
 simpleminimap-highlights	simpleminimap.txt	/*simpleminimap-highlights*
 simpleminimap-introduction	simpleminimap.txt	/*simpleminimap-introduction*
 simpleminimap-mappings	simpleminimap.txt	/*simpleminimap-mappings*
 simpleminimap-options	simpleminimap.txt	/*simpleminimap-options*
 simpleminimap-requirements	simpleminimap.txt	/*simpleminimap-requirements*
+simpleminimap-simplecore	simpleminimap.txt	/*simpleminimap-simplecore*
 simpleminimap-troubleshooting	simpleminimap.txt	/*simpleminimap-troubleshooting*
 simpleminimap.txt	simpleminimap.txt	/*simpleminimap.txt*

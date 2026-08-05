@@ -1,7 +1,7 @@
 *simpleminimap.txt*        Vim9 + Rust terminal code minimap
 
 ==============================================================================
-CONTENTS                                                   *simpleminimap-contents*
+CONTENTS                                              *simpleminimap-contents*
 
   1. Introduction .............................. |simpleminimap-introduction|
   2. Requirements .............................. |simpleminimap-requirements|
@@ -13,7 +13,7 @@ CONTENTS                                                   *simpleminimap-conten
   8. Troubleshooting ........................... |simpleminimap-troubleshooting|
 
 ==============================================================================
-1. INTRODUCTION                                         *simpleminimap-introduction*
+1. INTRODUCTION                                   *simpleminimap-introduction*
 
 SimpleMinimap opens a fixed-width window at the far right (or configured left)
 of the current tab and renders a compact overview of the active normal buffer.
@@ -24,11 +24,11 @@ density glyphs.
 The plugin supports Vim 9 only.  It does not support Neovim.
 
 ==============================================================================
-2. REQUIREMENTS                                         *simpleminimap-requirements*
+2. REQUIREMENTS                                   *simpleminimap-requirements*
 
 - Vim 9.0 or newer.
 - Vim compiled with +job and +channel.
-- Rust 1.85 or newer and Cargo when building from source.
+- Rust 1.88 or newer and Cargo when building from source.
 - UTF-8 is recommended for the default Braille renderer.
 
 Run: >
@@ -38,7 +38,7 @@ Run: >
 Both values must be 1.
 
 ==============================================================================
-3. COMMANDS                                                 *simpleminimap-commands*
+3. COMMANDS                                           *simpleminimap-commands*
 
 :SimpleMinimap                                      *:SimpleMinimap*
         Toggle the minimap for the current tab.
@@ -77,9 +77,9 @@ Both values must be 1.
         Echo the complete internal state dictionary.
 
 ==============================================================================
-4. MAPPINGS                                                 *simpleminimap-mappings*
+4. MAPPINGS                                           *simpleminimap-mappings*
 
-The plugin exposes:                              *<Plug>(simpleminimap-toggle)*
+The plugin exposes:                             *<Plug>(simpleminimap-toggle)*
 
   <Plug>(simpleminimap-toggle)
   <Plug>(simpleminimap-focus)                    *<Plug>(simpleminimap-focus)*
@@ -104,7 +104,7 @@ Mouse actions require the relevant Vim mouse events, normally via: >
 <
 
 ==============================================================================
-5. OPTIONS                                                   *simpleminimap-options*
+5. OPTIONS                                             *simpleminimap-options*
 
 All options must be set before the plugin is loaded.
 
@@ -188,7 +188,7 @@ All options must be set before the plugin is loaded.
         Boolean number, default 0.  Emit diagnostic messages to |:messages|.
 
 ==============================================================================
-6. HIGHLIGHTS                                             *simpleminimap-highlights*
+6. HIGHLIGHTS                                       *simpleminimap-highlights*
 
 *SimpleMinimapNormal*       Minimap text.  Defaults to Comment.
 *SimpleMinimapViewport*     Source viewport range.  Defaults to Visual.
@@ -212,7 +212,7 @@ The defaults are recreated after |ColorScheme|.  Define the groups in your own
 ColorScheme autocommand to override them.
 
 ==============================================================================
-7. DESIGN                                                     *simpleminimap-design*
+7. DESIGN                                               *simpleminimap-design*
 
 One session is maintained per tab.  The session follows the most recently
 entered eligible normal window in that tab.  TextChanged, TextChangedI,
@@ -250,7 +250,7 @@ minimap statusline additionally shows the cursor position as a percentage of
 the source buffer.
 
 ==============================================================================
-8. TROUBLESHOOTING                                   *simpleminimap-troubleshooting*
+8. TROUBLESHOOTING                             *simpleminimap-troubleshooting*
 
 "daemon not found"
         Run install.sh or install.ps1 in the plugin root, or set
@@ -310,5 +310,36 @@ What it guarantees:
 :SimpleMinimapLog
         Open the daemon transcript in a scratch buffer: start and exit events,
         restarts, protocol handshakes, send failures and stderr.
+
+
+==============================================================================
+DAEMON COMMAND LINE                                 *simpleminimap-daemon-cli*
+
+The daemon takes no arguments in normal use: the plugin starts it and speaks
+JSON over its stdin and stdout.  For diagnosis it also answers: >
+
+  simpleminimap-daemon --version
+  simpleminimap-daemon --help
+  simpleminimap-daemon --self-test
+<
+--self-test checks the daemon can run and prints "ok".
+install.sh runs it on the freshly built binary before replacing a working one,
+so a build that compiles but does not work never reaches lib/.
+
+Every daemon in the simple* suite answers these three the same way.
+
+VENDORED SUPERVISOR                                 *simpleminimap-simplecore*
+
+The daemon supervisor in autoload/simpleminimap/core.vim, and the test harness
+beside it, are vendored from the suite's shared .simplecore bundle rather
+than written here — each plugin carries its own copy so that installing
+this plugin alone is enough.  Do not edit those files in place: >
+
+  make core-verify
+<
+checks each of them against the sha256 recorded in .simplecore.manifest and
+fails the build when one has drifted.  `make check` depends on it.  To change
+the supervisor, edit .simplecore/core.vim in the suite checkout and re-run
+.simplecore/vendor.sh.
 
 vim:tw=78:ts=8:noet:ft=help:norl:
