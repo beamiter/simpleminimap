@@ -29,6 +29,7 @@ SimpleMinimap 是一个面向 **Vim 9** 的右侧代码缩略图插件。它参�
 - `hlsearch` 激活时把搜索匹配投影到 minimap（需要 Vim 9.1.0009+ 的
   `matchbufline()`，不满足时静默禁用）。
 - 跟随当前标签页最近进入的普通编辑窗口；切换缓冲区、编辑、保存、改变 `tabstop` 或调整窗口大小时自动更新。
+- 多分屏时可把 minimap 锁定到当前源分屏，查看其他窗口不会带走概览；源分屏失效时自动安全解锁。
 - 支持键盘预览/跳转、鼠标滚轮滚动，以及按住左键拖动视口；跳转会进入 Vim jump list。
 - 运行时可切换 Braille/Block/ASCII、调整宽度，也可把 minimap 放到左侧。
 - 带防抖、协议握手和请求合并；旧响应不会覆盖新状态，后台异常退出可自动恢复，
@@ -110,6 +111,9 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimapClose     " 关闭
 :SimpleMinimapRefresh   " 立即重绘
 :SimpleMinimapFocus     " 聚焦 minimap；尚未打开时先打开
+:SimpleMinimapPin       " 锁定当前源分屏，不再随焦点切换
+:SimpleMinimapUnpin     " 恢复跟随当前活动分屏
+:SimpleMinimapTogglePin " 切换锁定状态
 :SimpleMinimapResize 22 " 实时调整宽度（6..80）
 :SimpleMinimapStyle     " 循环 braille → blocks → ascii
 :SimpleMinimapStyle ascii
@@ -124,6 +128,8 @@ cp target/release/simpleminimap-daemon lib/
 ```vim
 <Plug>(simpleminimap-toggle)
 <Plug>(simpleminimap-focus)
+<Plug>(simpleminimap-pin)         " 幂等锁定
+<Plug>(simpleminimap-toggle-pin)  " 切换锁定状态
 ```
 
 例如：
@@ -131,7 +137,11 @@ cp target/release/simpleminimap-daemon lib/
 ```vim
 let g:simpleminimap_set_default_mapping = 0
 nmap <silent> <leader>u <Plug>(simpleminimap-toggle)
+nmap <silent> <leader>up <Plug>(simpleminimap-pin)
 ```
+
+`<Plug>(simpleminimap-pin)` 可重复调用而不会解锁；需要单键来回切换时请映射
+`<Plug>(simpleminimap-toggle-pin)`。
 
 minimap 缓冲区内的按键：
 
@@ -143,6 +153,7 @@ minimap 缓冲区内的按键：
 | 鼠标滚轮 | 滚动源代码窗口 |
 | `r` | 立即刷新 |
 | `s` | 循环切换渲染风格 |
+| `p` | 锁定/解锁当前源分屏；锁定时状态栏显示 `pinned` |
 | `+` / `-` | 每次增加/减少 2 列宽度 |
 | `<Esc>` | 焦点返回源代码窗口 |
 | `q` | 关闭当前标签页的 minimap |

@@ -1244,6 +1244,7 @@ def ConfigureMinimapWindow(winid: number, bufnr: number)
   win_execute(winid, 'nnoremap <silent> <buffer> <Esc> <Cmd>call simpleminimap#FocusSource()<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> r <Cmd>SimpleMinimapRefresh<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> s <Cmd>SimpleMinimapStyle<CR>')
+  win_execute(winid, 'nnoremap <silent> <buffer> p <Cmd>SimpleMinimapTogglePin<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> + <Cmd>call simpleminimap#AdjustWidth(2)<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> - <Cmd>call simpleminimap#AdjustWidth(-2)<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> <Space> <Cmd>call simpleminimap#Preview()<CR>')
@@ -1288,6 +1289,7 @@ def OpenForCurrentTab()
       bufnr: minimap_bufnr,
       source_winid: source_winid,
       source_bufnr: WindowInfo(source_winid).bufnr,
+      pinned: false,
       rows: [],
       source_lines: 0,
       request_id: 0,
@@ -1434,6 +1436,60 @@ export def FocusSource()
 enddef
 
 
+def SetPinned(value: bool)
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
+    if value
+      OpenForCurrentTab()
+      key = CurrentSessionKey()
+    endif
+    if key ==# '' || !has_key(sessions, key)
+      return
+    endif
+  endif
+
+  var session = sessions[key]
+  session.pinned = value
+  if !value
+    # Unpinning from another ordinary split should immediately follow that
+    # split; otherwise the next WinEnter would be required to make it visible.
+    var current_winid = win_getid()
+    if current_winid != session.winid && IsEligibleSourceWindow(current_winid)
+      var info = WindowInfo(current_winid)
+      var changed = session.source_winid != current_winid || session.source_bufnr != info.bufnr
+      session.source_winid = current_winid
+      session.source_bufnr = info.bufnr
+      session.preview_origin = []
+      if changed
+        Schedule(key, 0)
+      endif
+    endif
+  endif
+  redrawstatus
+  echom printf('[SimpleMinimap] source %s', value ? 'pinned' : 'following active window')
+enddef
+
+
+export def Pin()
+  SetPinned(true)
+enddef
+
+
+export def Unpin()
+  SetPinned(false)
+enddef
+
+
+export def TogglePin()
+  var key = CurrentSessionKey()
+  if key ==# '' || !has_key(sessions, key)
+    SetPinned(true)
+    return
+  endif
+  SetPinned(!get(sessions[key], 'pinned', false))
+enddef
+
+
 export def MaybeAutoOpen()
   if !get(g:, 'simpleminimap_auto_open', 0) || CurrentSessionKey() !=# ''
     return
@@ -1531,6 +1587,7 @@ export def Statusline(): string
   var state = backend_ready ? '' : ' !'
   var last_render_ms = get(session, 'last_render_ms', -1.0)
   var timing = last_render_ms >= 0.0 ? printf(' · %.0fms', last_render_ms) : ''
+  var pinned = get(session, 'pinned', false) ? ' · pinned' : ''
   var position = ''
   var source_lines = get(session, 'source_lines', 0)
   if source_lines > 0 && WindowExists(get(session, 'source_winid', 0))
@@ -1539,7 +1596,7 @@ export def Statusline(): string
       position = printf(' · %d%%', min([100, (cursor_pos[1] * 100 + source_lines - 1) / source_lines]))
     endif
   endif
-  return printf(' %s · %s%s%s%s ', label, style, position, timing, state)
+  return printf(' %s · %s%s%s%s%s ', label, style, pinned, position, timing, state)
 enddef
 
 
@@ -1710,6 +1767,29 @@ export def OnContextChanged()
   if current_winid == session.winid
     return
   endif
+  if get(session, 'pinned', false)
+    # Pinning is window-scoped: changing buffers inside the pinned split keeps
+    # following it, while entering another split cannot steal the minimap.
+    if IsEligibleSourceWindow(session.source_winid)
+      if current_winid == session.source_winid
+        var pinned_info = WindowInfo(current_winid)
+        var pinned_changed = session.source_bufnr != pinned_info.bufnr
+        session.source_bufnr = pinned_info.bufnr
+        session.preview_origin = []
+        if pinned_changed || empty(session.rows)
+          Schedule(key, 0)
+        else
+          UpdateViewport(key)
+        endif
+        redrawstatus
+      endif
+      return
+    endif
+    # A closed or ineligible pinned split cannot remain a useful source.  Fall
+    # back to the normal replacement policy instead of stranding the minimap.
+    session.pinned = false
+    redrawstatus
+  endif
   if !IsEligibleSourceWindow(current_winid)
     if current_winid == session.source_winid || !IsEligibleSourceWindow(session.source_winid)
       var tab_info = WindowInfo(session.winid)
@@ -1812,6 +1892,8 @@ export def OnWinClosed(winid: number)
 
   for [key, session] in items(sessions)
     if get(session, 'source_winid', 0) == winid
+      session.pinned = false
+      redrawstatus
       var tab_info = WindowInfo(session.winid)
       var replacement = empty(tab_info) ? 0 : FindSourceWindow(tab_info.tabnr)
       if replacement > 0
@@ -1829,6 +1911,37 @@ export def OnWinClosed(winid: number)
 enddef
 
 
+def FollowPinnedReplacement(key: string, source_winid: number, wiped_bufnr: number, _timer: number)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  if !get(session, 'pinned', false)
+        \ || get(session, 'source_winid', 0) != source_winid
+        \ || !WindowExists(source_winid)
+    return
+  endif
+
+  # BufWipeout can run before Vim has installed the alternate buffer in every
+  # window that displayed the old one.  Reconcile on the next event-loop turn:
+  # the pin belongs to the window, so a normal replacement buffer is adopted
+  # without briefly unlocking or letting another split steal the session.
+  var info = WindowInfo(source_winid)
+  if empty(info) || info.bufnr == wiped_bufnr || !IsEligibleSourceWindow(source_winid)
+    return
+  endif
+  var changed = session.source_bufnr != info.bufnr
+  session.source_bufnr = info.bufnr
+  session.preview_origin = []
+  if changed || empty(session.rows)
+    Schedule(key, 0)
+  else
+    UpdateViewport(key)
+  endif
+  redrawstatus
+enddef
+
+
 export def OnBufferWipeout(bufnr: number)
   for [key, session] in items(sessions)
     if get(session, 'bufnr', -1) == bufnr
@@ -1836,6 +1949,19 @@ export def OnBufferWipeout(bufnr: number)
       return
     endif
     if get(session, 'source_bufnr', -1) == bufnr
+      if get(session, 'pinned', false) && WindowExists(get(session, 'source_winid', 0))
+        var pinned_winid = session.source_winid
+        FollowPinnedReplacement(key, pinned_winid, bufnr, 0)
+        if has_key(sessions, key)
+              \ && get(sessions[key], 'pinned', false)
+              \ && get(sessions[key], 'source_bufnr', -1) == bufnr
+          timer_start(0, function(FollowPinnedReplacement,
+            [key, pinned_winid, bufnr]))
+        endif
+        continue
+      endif
+      session.pinned = false
+      redrawstatus
       var tab_info = WindowInfo(session.winid)
       var replacement = empty(tab_info) ? 0 : FindSourceWindow(tab_info.tabnr)
       if replacement > 0
@@ -1880,7 +2006,8 @@ export def Health()
   ]
   for [key, session] in items(sessions)
     var last_render_ms = get(session, 'last_render_ms', -1.0)
-    checks->add(printf('[INFO] session %s: renders=%d cache-skips=%d last=%s', key,
+    checks->add(printf('[INFO] session %s: %s, renders=%d cache-skips=%d last=%s', key,
+      get(session, 'pinned', false) ? 'pinned' : 'following',
       get(session, 'render_count', 0), get(session, 'render_skips', 0),
       last_render_ms >= 0.0 ? printf('%.0fms', last_render_ms) : 'n/a'))
   endfor

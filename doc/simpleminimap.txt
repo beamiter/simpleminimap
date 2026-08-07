@@ -56,6 +56,17 @@ Both values must be 1.
 :SimpleMinimapFocus                                   *:SimpleMinimapFocus*
         Focus the minimap window.  Open it first when necessary.
 
+:SimpleMinimapPin                                       *:SimpleMinimapPin*
+        Lock this tab's minimap to its current source split.  Entering other
+        splits no longer changes the rendered source.
+
+:SimpleMinimapUnpin                                   *:SimpleMinimapUnpin*
+        Resume following the active eligible split.
+
+:SimpleMinimapTogglePin                         *:SimpleMinimapTogglePin*
+        Toggle the source lock.  A lost or ineligible pinned split is safely
+        unlocked and replaced by another eligible window.
+
 :SimpleMinimapResize [width]                         *:SimpleMinimapResize*
         Set the current minimap width to 6..80 columns.  With no argument,
         report the configured width.
@@ -83,6 +94,11 @@ The plugin exposes:                             *<Plug>(simpleminimap-toggle)*
 
   <Plug>(simpleminimap-toggle)
   <Plug>(simpleminimap-focus)                    *<Plug>(simpleminimap-focus)*
+  <Plug>(simpleminimap-pin)                        *<Plug>(simpleminimap-pin)*
+  <Plug>(simpleminimap-toggle-pin)          *<Plug>(simpleminimap-toggle-pin)*
+
+The pin target is idempotent: invoking it while already pinned keeps the pin.
+Use the toggle-pin target for a mapping that alternates between both states.
 
 When |g:simpleminimap_set_default_mapping| is enabled and <Leader>m is free,
 the plugin maps <Leader>m to that <Plug> target.
@@ -95,6 +111,7 @@ Inside the minimap buffer:
   Mouse wheel Scroll the tracked source window.
   r           Refresh immediately.
   s           Cycle the render style.
+  p           Pin or unpin the current source split.
   + / -       Grow or shrink the minimap by two columns.
   <Esc>       Return focus to the tracked source window.
   q           Close the minimap.
@@ -215,7 +232,10 @@ ColorScheme autocommand to override them.
 7. DESIGN                                               *simpleminimap-design*
 
 One session is maintained per tab.  The session follows the most recently
-entered eligible normal window in that tab.  TextChanged, TextChangedI,
+entered eligible normal window in that tab, unless pinned with
+|:SimpleMinimapPin|.  A pin belongs to the source window rather than its
+buffer: wiping that buffer keeps the pin when Vim loads another eligible
+buffer into the same window.  TextChanged, TextChangedI,
 BufWritePost, WinResized, WinScrolled and tabstop changes schedule an update.
 
 The source is divided into at most one group per minimap screen row.  A group

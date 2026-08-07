@@ -64,6 +64,66 @@ call assert_equal(3, session.rows[0].end)
 call assert_true(session.viewport_match > 0)
 call assert_true(session.cursor_match > 0)
 
+" Pinning keeps a tab's minimap attached to its source split.  Unpinning from
+" another ordinary split adopts that split immediately, then closing it falls
+" back to the remaining source window.
+call simpleminimap#Pin()
+let session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_true(session.pinned)
+call simpleminimap#Pin()
+call assert_true(values(simpleminimap#DebugStatus().sessions)[0].pinned,
+      \ 'Pin is idempotent')
+call assert_match('SimpleMinimapPin', maparg('<Plug>(simpleminimap-pin)', 'n'))
+call assert_notmatch('Toggle', maparg('<Plug>(simpleminimap-pin)', 'n'))
+call assert_match('SimpleMinimapTogglePin',
+      \ maparg('<Plug>(simpleminimap-toggle-pin)', 'n'))
+let g:statusline_winid = session.winid
+call assert_match('pinned', simpleminimap#Statusline())
+unlet g:statusline_winid
+vnew
+let s:other_source_winid = win_getid()
+call setline(1, ['another split'])
+call simpleminimap#OnContextChanged()
+let session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_equal(s:source_winid, session.source_winid)
+call simpleminimap#Unpin()
+let session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_false(session.pinned)
+call assert_equal(s:other_source_winid, session.source_winid)
+call simpleminimap#Pin()
+call assert_true(values(simpleminimap#DebugStatus().sessions)[0].pinned)
+let s:wiped_source_bufnr = bufnr()
+setlocal bufhidden=wipe
+noautocmd enew!
+call setline(1, ['replacement in the pinned split'])
+call simpleminimap#OnBufferWipeout(s:wiped_source_bufnr)
+let session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_false(bufexists(s:wiped_source_bufnr))
+call assert_equal(s:other_source_winid, session.source_winid,
+      \ 'wiping the source buffer keeps the pinned window')
+call assert_true(session.pinned,
+      \ 'wiping the source buffer does not clear a window pin')
+call assert_equal(winbufnr(s:other_source_winid), session.source_bufnr,
+      \ 'the pinned window adopts its normal replacement buffer')
+call assert_equal('', getbufvar(session.source_bufnr, '&buftype'))
+sleep 20m
+close!
+call simpleminimap#OnContextChanged()
+let session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_false(session.pinned)
+call assert_equal(s:source_winid, session.source_winid)
+let s:attempt = 0
+while values(simpleminimap#DebugStatus().sessions)[0].source_lines
+      \ != len(getbufline(s:source_bufnr, 1, '$')) && s:attempt < 150
+  sleep 20m
+  let s:attempt += 1
+endwhile
+let session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_equal(len(getbufline(s:source_bufnr, 1, '$')), session.source_lines,
+      \ 'falling back from a closed pinned split finishes rendering the replacement')
+call assert_match('SimpleMinimapTogglePin',
+      \ win_execute(session.winid, 'silent echo maparg("p", "n")'))
+
 " Density shading attaches text properties to the rendered minimap cells.
 if has('textprop')
   let s:props = prop_list(1, {'bufnr': session.bufnr})

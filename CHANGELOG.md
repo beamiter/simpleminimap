@@ -4,6 +4,15 @@ All notable changes to SimpleMinimap are documented here.
 
 ## Unreleased - 2026-08-05
 
+### 交互演进
+
+- 新增 `:SimpleMinimapPin`、`:SimpleMinimapUnpin`、`:SimpleMinimapTogglePin`
+  与幂等 `<Plug>(simpleminimap-pin)`、切换用 `<Plug>(simpleminimap-toggle-pin)`。
+  多分屏工作时可以把每个标签页的 minimap
+  锁定在当前源分屏，进入其他分屏不会再切走概览；源分屏失效时会安全解锁并
+  回退到可用窗口；仅源 buffer 被 wipe 且同窗换入普通 buffer 时则保持 window
+  pin 并继续跟随。minimap 内按 `p` 可快速切换，状态栏和 health 会显示锁定状态。
+
 ### 全套统一
 
 - `.simplecore/` 回来了。10 个仓库里的 supervisor(`autoload/<plugin>/core.vim`

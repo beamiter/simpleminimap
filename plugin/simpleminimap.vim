@@ -65,6 +65,9 @@ command! SimpleMinimapOpen simpleminimap#Open()
 command! SimpleMinimapClose simpleminimap#Close()
 command! SimpleMinimapRefresh simpleminimap#Refresh()
 command! SimpleMinimapFocus simpleminimap#Focus()
+command! SimpleMinimapPin simpleminimap#Pin()
+command! SimpleMinimapUnpin simpleminimap#Unpin()
+command! SimpleMinimapTogglePin simpleminimap#TogglePin()
 command! SimpleMinimapRestart simpleminimap#Restart()
 command! -nargs=? SimpleMinimapResize simpleminimap#Resize(<q-args>)
 command! -nargs=? -complete=customlist,simpleminimap#CompleteStyle SimpleMinimapStyle simpleminimap#SetStyle(<q-args>)
@@ -74,6 +77,8 @@ command! SimpleMinimapLog call simpleminimap#ShowLog()
 
 nnoremap <silent> <Plug>(simpleminimap-toggle) <Cmd>SimpleMinimap<CR>
 nnoremap <silent> <Plug>(simpleminimap-focus) <Cmd>SimpleMinimapFocus<CR>
+nnoremap <silent> <Plug>(simpleminimap-pin) <Cmd>SimpleMinimapPin<CR>
+nnoremap <silent> <Plug>(simpleminimap-toggle-pin) <Cmd>SimpleMinimapTogglePin<CR>
 if g:simpleminimap_set_default_mapping && maparg('<leader>m', 'n') ==# ''
   nmap <silent> <leader>m <Plug>(simpleminimap-toggle)
 endif

@@ -5,12 +5,17 @@
 :SimpleMinimapHealth	simpleminimap.txt	/*:SimpleMinimapHealth*
 :SimpleMinimapLog	simpleminimap.txt	/*:SimpleMinimapLog*
 :SimpleMinimapOpen	simpleminimap.txt	/*:SimpleMinimapOpen*
+:SimpleMinimapPin	simpleminimap.txt	/*:SimpleMinimapPin*
 :SimpleMinimapRefresh	simpleminimap.txt	/*:SimpleMinimapRefresh*
 :SimpleMinimapResize	simpleminimap.txt	/*:SimpleMinimapResize*
 :SimpleMinimapRestart	simpleminimap.txt	/*:SimpleMinimapRestart*
 :SimpleMinimapStyle	simpleminimap.txt	/*:SimpleMinimapStyle*
+:SimpleMinimapTogglePin	simpleminimap.txt	/*:SimpleMinimapTogglePin*
+:SimpleMinimapUnpin	simpleminimap.txt	/*:SimpleMinimapUnpin*
 <Plug>(simpleminimap-focus)	simpleminimap.txt	/*<Plug>(simpleminimap-focus)*
+<Plug>(simpleminimap-pin)	simpleminimap.txt	/*<Plug>(simpleminimap-pin)*
 <Plug>(simpleminimap-toggle)	simpleminimap.txt	/*<Plug>(simpleminimap-toggle)*
+<Plug>(simpleminimap-toggle-pin)	simpleminimap.txt	/*<Plug>(simpleminimap-toggle-pin)*
 SimpleMinimapCursor	simpleminimap.txt	/*SimpleMinimapCursor*
 SimpleMinimapNormal	simpleminimap.txt	/*SimpleMinimapNormal*
 SimpleMinimapSearch	simpleminimap.txt	/*SimpleMinimapSearch*
