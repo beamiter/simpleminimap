@@ -53,6 +53,10 @@ Both values must be 1.
         Render immediately, bypassing the normal edit debounce and the
         render signature cache.
 
+:SimpleMinimapRefresh!
+        Force every live tab session to render, without changing the current
+        tab or window. Closed and invalid sessions are pruned, not reopened.
+
 :SimpleMinimapFocus                                   *:SimpleMinimapFocus*
         Focus the minimap window.  Open it first when necessary.
 

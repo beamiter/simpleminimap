@@ -1404,7 +1404,25 @@ export def Close()
 enddef
 
 
-export def Refresh()
+export def Refresh(all: bool = false)
+  PruneSessions()
+  if all
+    # Snapshot the backing buffer as well as the window-id key. Autocommands
+    # may close a session while a forced render is being scheduled; never let
+    # a replacement that reuses that id inherit the old refresh operation.
+    var snapshot: list<dict<any>> = []
+    for key in keys(sessions)
+      snapshot->add({key: key, bufnr: sessions[key].bufnr})
+    endfor
+    for item in snapshot
+      if has_key(sessions, item.key)
+            \ && get(sessions[item.key], 'bufnr', 0) == item.bufnr
+            \ && WindowExists(get(sessions[item.key], 'winid', 0))
+        Schedule(item.key, 0, true)
+      endif
+    endfor
+    return
+  endif
   var key = CurrentSessionKey()
   if key !=# ''
     Schedule(key, 0, true)

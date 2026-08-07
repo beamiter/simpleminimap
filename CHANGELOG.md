@@ -6,6 +6,10 @@ All notable changes to SimpleMinimap are documented here.
 
 ### 交互演进
 
+- `:SimpleMinimapRefresh!` 可在不切换 tab/window 的情况下强制刷新所有存活
+  session，并绕过各自的签名缓存；遍历前固定 session 身份，已关闭或被回调替换
+  的窗口不会被复活或误刷新。
+
 - `:SimpleMinimapResize` 及 minimap 内的 `+` / `-` 现在会同步所有已打开
   tab session；`g:simpleminimap_width` 是全局配置，不再出现后台标签页仍保留旧
   宽度、切回去才发现布局不一致的情况。

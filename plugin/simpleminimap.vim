@@ -63,7 +63,7 @@ g:simpleminimap_ignore_filetypes = type(configured_ignored_filetypes) == v:t_lis
 command! SimpleMinimap simpleminimap#Toggle()
 command! SimpleMinimapOpen simpleminimap#Open()
 command! SimpleMinimapClose simpleminimap#Close()
-command! SimpleMinimapRefresh simpleminimap#Refresh()
+command! -bang SimpleMinimapRefresh simpleminimap#Refresh(<bang>0 ? true : false)
 command! SimpleMinimapFocus simpleminimap#Focus()
 command! SimpleMinimapPin simpleminimap#Pin()
 command! SimpleMinimapUnpin simpleminimap#Unpin()

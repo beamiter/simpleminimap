@@ -109,7 +109,8 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimap          " 打开/关闭
 :SimpleMinimapOpen      " 打开
 :SimpleMinimapClose     " 关闭
-:SimpleMinimapRefresh   " 立即重绘
+:SimpleMinimapRefresh   " 立即重绘当前 tab
+:SimpleMinimapRefresh!  " 强制重绘所有已打开 tab session
 :SimpleMinimapFocus     " 聚焦 minimap；尚未打开时先打开
 :SimpleMinimapPin       " 锁定当前源分屏，不再随焦点切换
 :SimpleMinimapUnpin     " 恢复跟随当前活动分屏
@@ -188,6 +189,10 @@ minimap 缓冲区内的按键：
 `g:simpleminimap_width` 是全局配置：运行时执行
 `:SimpleMinimapResize`，或在任一 minimap 内按 `+` / `-`，会同步调整所有已打开
 标签页的 minimap；之后新开的 session 也使用同一宽度。
+
+`:SimpleMinimapRefresh` 只强制刷新当前标签页并绕过内容签名缓存；加 `!`
+会以相同方式刷新所有存活 session，同时保持当前 tab/window 不变。已经关闭或
+失效的 session 只会被清理，不会因全局刷新而重新打开。
 
 示例：
 

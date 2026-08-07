@@ -57,6 +57,18 @@ call setline(1, ['tab two'])
 SimpleMinimapOpen
 call assert_equal(2, len(simpleminimap#DebugStatus().sessions))
 call assert_true(simpleminimap#DebugStatus().backend_running)
+let s:refresh_all_origin = win_getid()
+let s:refresh_ids = {}
+for [s:key, s:tab_session] in items(simpleminimap#DebugStatus().sessions)
+  let s:refresh_ids[s:key] = s:tab_session.request_id
+endfor
+SimpleMinimapRefresh!
+call assert_equal(s:refresh_all_origin, win_getid(),
+      \ 'Refresh! does not visit a background tab or steal focus')
+for [s:key, s:tab_session] in items(simpleminimap#DebugStatus().sessions)
+  call assert_true(s:tab_session.request_id > s:refresh_ids[s:key],
+        \ 'Refresh! forces every live session past the signature cache')
+endfor
 let s:resize_origin = win_getid()
 SimpleMinimapResize 16
 call assert_equal(s:resize_origin, win_getid(),
@@ -72,7 +84,13 @@ for s:tab_session in values(simpleminimap#DebugStatus().sessions)
   call assert_equal(18, getwininfo(s:tab_session.winid)[0].width,
         \ 'minimap +/- width changes retain global multi-tab scope')
 endfor
+let s:closed_minimap = values(filter(copy(simpleminimap#DebugStatus().sessions),
+      \ {_, session -> getwininfo(session.winid)[0].tabnr == tabpagenr()}))[0].winid
 SimpleMinimapClose
+call assert_equal(1, len(simpleminimap#DebugStatus().sessions))
+SimpleMinimapRefresh!
+call assert_equal(0, win_id2win(s:closed_minimap),
+      \ 'Refresh! neither recreates nor resurrects a closed session')
 call assert_equal(1, len(simpleminimap#DebugStatus().sessions))
 tabprevious
 call assert_equal(1, len(simpleminimap#DebugStatus().sessions))
