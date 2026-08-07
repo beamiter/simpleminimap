@@ -114,7 +114,7 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimapPin       " 锁定当前源分屏，不再随焦点切换
 :SimpleMinimapUnpin     " 恢复跟随当前活动分屏
 :SimpleMinimapTogglePin " 切换锁定状态
-:SimpleMinimapResize 22 " 实时调整宽度（6..80）
+:SimpleMinimapResize 22 " 实时调整所有标签页的宽度（6..80）
 :SimpleMinimapStyle     " 循环 braille → blocks → ascii
 :SimpleMinimapStyle ascii
 :SimpleMinimapRestart   " 重启后台并保留当前 session
@@ -154,7 +154,7 @@ minimap 缓冲区内的按键：
 | `r` | 立即刷新 |
 | `s` | 循环切换渲染风格 |
 | `p` | 锁定/解锁当前源分屏；锁定时状态栏显示 `pinned` |
-| `+` / `-` | 每次增加/减少 2 列宽度 |
+| `+` / `-` | 所有标签页的 minimap 每次增加/减少 2 列宽度 |
 | `<Esc>` | 焦点返回源代码窗口 |
 | `q` | 关闭当前标签页的 minimap |
 
@@ -184,6 +184,10 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_mouse_scroll_lines` | `3` | 在 minimap 上滚动一格滚轮时源窗口移动的行数，限制为 `1..50` |
 | `g:simpleminimap_set_default_mapping` | `1` | 是否在 `<leader>m` 空闲时安装默认映射 |
 | `g:simpleminimap_debug` | `0` | 是否通过 `:messages` 输出调试日志 |
+
+`g:simpleminimap_width` 是全局配置：运行时执行
+`:SimpleMinimapResize`，或在任一 minimap 内按 `+` / `-`，会同步调整所有已打开
+标签页的 minimap；之后新开的 session 也使用同一宽度。
 
 示例：
 

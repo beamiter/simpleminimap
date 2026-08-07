@@ -57,6 +57,21 @@ call setline(1, ['tab two'])
 SimpleMinimapOpen
 call assert_equal(2, len(simpleminimap#DebugStatus().sessions))
 call assert_true(simpleminimap#DebugStatus().backend_running)
+let s:resize_origin = win_getid()
+SimpleMinimapResize 16
+call assert_equal(s:resize_origin, win_getid(),
+      \ 'resizing background sessions does not steal focus')
+for s:tab_session in values(simpleminimap#DebugStatus().sessions)
+  call assert_equal(16, getwininfo(s:tab_session.winid)[0].width,
+        \ 'runtime width changes reach minimaps in every tab')
+endfor
+call simpleminimap#AdjustWidth(2)
+call assert_equal(s:resize_origin, win_getid(),
+      \ '+/- keeps focus while resizing every tab')
+for s:tab_session in values(simpleminimap#DebugStatus().sessions)
+  call assert_equal(18, getwininfo(s:tab_session.winid)[0].width,
+        \ 'minimap +/- width changes retain global multi-tab scope')
+endfor
 SimpleMinimapClose
 call assert_equal(1, len(simpleminimap#DebugStatus().sessions))
 tabprevious

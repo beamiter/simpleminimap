@@ -6,6 +6,9 @@ All notable changes to SimpleMinimap are documented here.
 
 ### 交互演进
 
+- `:SimpleMinimapResize` 及 minimap 内的 `+` / `-` 现在会同步所有已打开
+  tab session；`g:simpleminimap_width` 是全局配置，不再出现后台标签页仍保留旧
+  宽度、切回去才发现布局不一致的情况。
 - 新增 `:SimpleMinimapPin`、`:SimpleMinimapUnpin`、`:SimpleMinimapTogglePin`
   与幂等 `<Plug>(simpleminimap-pin)`、切换用 `<Plug>(simpleminimap-toggle-pin)`。
   多分屏工作时可以把每个标签页的 minimap

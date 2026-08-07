@@ -68,8 +68,9 @@ Both values must be 1.
         unlocked and replaced by another eligible window.
 
 :SimpleMinimapResize [width]                         *:SimpleMinimapResize*
-        Set the current minimap width to 6..80 columns.  With no argument,
-        report the configured width.
+        Set every open minimap to 6..80 columns. The option is global, so
+        background tab sessions change together and newly opened sessions use
+        the same width. With no argument, report the configured width.
 
 :SimpleMinimapStyle [style]                           *:SimpleMinimapStyle*
         Set "braille", "blocks" or "ascii" and redraw all sessions.  With
@@ -112,7 +113,7 @@ Inside the minimap buffer:
   r           Refresh immediately.
   s           Cycle the render style.
   p           Pin or unpin the current source split.
-  + / -       Grow or shrink the minimap by two columns.
+  + / -       Grow or shrink every tab's minimap by two columns.
   <Esc>       Return focus to the tracked source window.
   q           Close the minimap.
 
@@ -126,7 +127,8 @@ Mouse actions require the relevant Vim mouse events, normally via: >
 All options must be set before the plugin is loaded.
 
 *g:simpleminimap_width*
-        Number, default 18.  Minimap width, clamped to 6..80.
+        Number, default 18. Minimap width, clamped to 6..80. Runtime resize
+        commands apply this global value to every open tab session.
 
 *g:simpleminimap_max_columns*
         Number, default 120.  Maximum logical source columns analyzed per

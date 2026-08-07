@@ -1545,11 +1545,16 @@ export def Resize(value: string)
   endif
   var width = Clamp(str2nr(value), 6, 80)
   g:simpleminimap_width = width
-  var key = CurrentSessionKey()
-  if key !=# '' && has_key(sessions, key) && WindowExists(sessions[key].winid)
-    win_execute(sessions[key].winid, 'vertical resize ' .. width)
-    Schedule(key, 0)
-  endif
+  # Width is a global option, so its runtime command must not leave minimaps
+  # in background tabs at an old value. Apply it to every live session just as
+  # SetStyle() already applies a global style change to every session.
+  PruneSessions()
+  for key in keys(sessions)
+    if has_key(sessions, key) && WindowExists(sessions[key].winid)
+      win_execute(sessions[key].winid, 'vertical resize ' .. width)
+      Schedule(key, 0)
+    endif
+  endfor
 enddef
 
 
