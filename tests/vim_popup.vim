@@ -143,6 +143,15 @@ call assert_equal(20, g:simpleminimap_width)
 SimpleMinimapResize 12
 silent SimpleMinimapHealth
 SimpleMinimapRefresh!
+SimpleMinimapStyle ascii
+call assert_equal('ascii', g:simpleminimap_render_style)
+SimpleMinimapStyle braille
+" A colour-scheme reload used to push window-local options at whatever the
+" session's winid was; a popup has none, and setwinvar() on one is not a way to
+" find that out.
+doautocmd ColorScheme
+call assert_equal(1, popup_getpos(s:Session().winid).visible,
+      \ 'a ColorScheme reload leaves the popup alone')
 
 " ---------------------------------------------------------------------------
 " Closing takes the popup and its buffer with it.

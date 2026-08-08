@@ -2378,9 +2378,15 @@ enddef
 export def OnColorScheme()
   SetupHighlights()
   for session in values(sessions)
-    if WindowExists(get(session, 'winid', 0))
-      ApplyWindowOptions(session.winid)
+    if !WindowExists(get(session, 'winid', 0))
+      continue
     endif
+    if IsPopupSession(session)
+      # A popup has no window-local options to restore; its colour comes from
+      # the `highlight` argument, which follows the re-linked group by name.
+      continue
+    endif
+    ApplyWindowOptions(session.winid)
   endfor
 enddef
 
