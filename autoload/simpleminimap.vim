@@ -205,6 +205,7 @@ def DropSession(key: string): dict<any>
   ClearMatches(key)
   sessions->remove(key)
   ForgetRequestsForSession(key)
+  ReleaseUnusedListeners()
   return session
 enddef
 
@@ -903,6 +904,124 @@ def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_ch
 enddef
 
 
+# ---------------------------------------------------------------------------
+# Incremental sampling.
+#
+# A render used to re-read the whole buffer: RepresentativeSample() calls
+# SampleText() three times per band and BuildSampleGroup() calls it for four
+# bands, i.e. up to 12 getbufline() + NormalizeDisplayCells() pairs per minimap
+# row -- 720 of them on a 60-row minimap -- and typing one character in one
+# line paid all of it again, every debounce tick, on the main thread.  On a CJK
+# or emoji-heavy file NormalizeDisplayCells() leaves its ASCII fast path and
+# walks the line character by character, which turns that into tens of
+# thousands of function calls per keystroke.
+#
+# Nothing outside the edited line can have changed, so cache the normalised
+# samples per band and let a buffer listener invalidate exactly the bands the
+# edit touched.  A keystroke inside one band then costs 12 samples instead of
+# 720.
+# ---------------------------------------------------------------------------
+const SAMPLE_CACHE_MAX_ENTRIES = 4000
+var sample_caches: dict<any> = {}
+var sample_listeners: dict<number> = {}
+var sample_cache_hits = 0
+var sample_cache_misses = 0
+
+def IncrementalEnabled(): bool
+  return get(g:, 'simpleminimap_incremental', 1) != 0 && exists('*listener_add')
+enddef
+
+
+def OnBufferListen(bufnr: number, start: number, end: number, added: number, _changes: list<any>)
+  var key = string(bufnr)
+  if !has_key(sample_caches, key)
+    return
+  endif
+  if added != 0
+    # Adding or removing lines moves every band below the edit *and* changes
+    # the band boundaries themselves, because they are derived from the line
+    # count.  Nothing in the cache survives that.
+    sample_caches[key].entries = {}
+    return
+  endif
+  # `end` is the line below the last changed one.
+  var entries = sample_caches[key].entries
+  for entry_key in keys(entries)
+    var bounds = split(entry_key, ':')
+    if str2nr(bounds[0]) < end && str2nr(bounds[1]) >= start
+      entries->remove(entry_key)
+    endif
+  endfor
+enddef
+
+
+def EnsureBufferListener(bufnr: number)
+  var key = string(bufnr)
+  if has_key(sample_listeners, key) || bufnr <= 0
+    return
+  endif
+  try
+    sample_listeners[key] = listener_add(OnBufferListen, bufnr)
+  catch
+    Log(printf('could not watch buffer %d: %s', bufnr, v:exception))
+  endtry
+enddef
+
+
+def ReleaseBufferListener(bufnr: number)
+  var key = string(bufnr)
+  if has_key(sample_listeners, key)
+    try
+      listener_remove(sample_listeners[key])
+    catch
+    endtry
+    sample_listeners->remove(key)
+  endif
+  if has_key(sample_caches, key)
+    sample_caches->remove(key)
+  endif
+enddef
+
+
+# Called after anything that can drop a session: a listener on a buffer no
+# session tracks any more is a leak that keeps firing for the rest of the
+# session.
+def ReleaseUnusedListeners()
+  var live: dict<bool> = {}
+  for session in values(sessions)
+    live[string(get(session, 'source_bufnr', -1))] = true
+  endfor
+  for key in keys(sample_listeners)
+    if !has_key(live, key)
+      ReleaseBufferListener(str2nr(key))
+    endif
+  endfor
+enddef
+
+
+def SampleCacheEntries(bufnr: number, config: string): dict<any>
+  var key = string(bufnr)
+  if !has_key(sample_caches, key) || sample_caches[key].config !=# config
+    sample_caches[key] = {config: config, entries: {}}
+  endif
+  # Resizing the window or the minimap leaves band keys nothing will ever ask
+  # for again; a hard cap is cheaper than tracking which ones are still live.
+  if len(sample_caches[key].entries) > SAMPLE_CACHE_MAX_ENTRIES
+    sample_caches[key].entries = {}
+  endif
+  return sample_caches[key].entries
+enddef
+
+
+export def SampleCacheStats(): dict<number>
+  return {
+    hits: sample_cache_hits,
+    misses: sample_cache_misses,
+    buffers: len(sample_listeners),
+  }
+enddef
+
+
 def BuildRequestBody(key: string): dict<any>
   var session = sessions[key]
   var dimensions = WindowDimensions(session.winid)
@@ -921,13 +1040,47 @@ def BuildRequestBody(key: string): dict<any>
     style = 'braille'
   endif
 
+  var incremental = IncrementalEnabled()
+  var entries: dict<any> = {}
+  if incremental
+    EnsureBufferListener(session.source_bufnr)
+    # Listener callbacks are queued until a redraw or an explicit flush, and
+    # this runs from a timer.  Without the flush the cache would still be
+    # holding the samples from before the keystroke that scheduled the render,
+    # and the minimap would show pre-edit text with a matching signature --
+    # i.e. it would never correct itself.
+    try
+      listener_flush(session.source_bufnr)
+    catch
+    endtry
+    entries = SampleCacheEntries(session.source_bufnr,
+      printf('%d|%d|%s', max_columns, tabstop,
+        get(g:, 'simpleminimap_sampling', 'adaptive')))
+    # :SimpleMinimapRefresh! is the documented way to say "I do not trust what
+    # I am looking at", so it has to reach past the cache as well.
+    if get(session, 'force_render', false)
+      entries->filter((_, _v) => false)
+    endif
+  endif
+
   var groups: list<string> = []
   for row_index in range(0, row_count - 1)
     var start_zero = (row_index * source_lines) / row_count
     var end_zero = (((row_index + 1) * source_lines) / row_count) - 1
     var start_line = start_zero + 1
     var end_line = max([start_line, end_zero + 1])
-    var samples = BuildSampleGroup(session.source_bufnr, start_line, end_line, max_columns, tabstop)
+    var cache_key = printf('%d:%d', start_line, end_line)
+    var samples: list<string>
+    if incremental && has_key(entries, cache_key)
+      samples = entries[cache_key]
+      sample_cache_hits += 1
+    else
+      samples = BuildSampleGroup(session.source_bufnr, start_line, end_line, max_columns, tabstop)
+      sample_cache_misses += 1
+      if incremental
+        entries[cache_key] = samples
+      endif
+    endif
     groups->add(printf("%d\t%d\t%s\t%s\t%s\t%s",
       start_line, end_line,
       EncodeField(samples[0]), EncodeField(samples[1]), EncodeField(samples[2]), EncodeField(samples[3])))
@@ -2748,6 +2901,7 @@ enddef
 
 
 export def OnBufferWipeout(bufnr: number)
+  ReleaseBufferListener(bufnr)
   for [key, session] in items(sessions)
     if get(session, 'bufnr', -1) == bufnr
       DropSession(key)
@@ -2797,6 +2951,7 @@ const KNOWN_OPTIONS = [
   'simpleminimap_debug',
   'simpleminimap_drag_thumb',
   'simpleminimap_ignore_filetypes',
+  'simpleminimap_incremental',
   'simpleminimap_max_columns',
   'simpleminimap_mouse_scroll_lines',
   'simpleminimap_overlays',
@@ -2882,6 +3037,13 @@ export def Health()
     printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
     printf('[%s] density shading: %s', ShadingEnabled() ? 'OK' : 'INFO', ShadingEnabled() ? 'enabled' : (has('textprop') == 1 ? 'disabled by g:simpleminimap_shading' : 'needs +textprop')),
     printf('[INFO] sessions: %d, pending requests: %d', len(sessions), len(requests)),
+    printf('[%s] incremental sampling: %s', IncrementalEnabled() ? 'OK' : 'INFO',
+      IncrementalEnabled()
+        ? printf('%d buffers watched, %d cached bands reused, %d resampled',
+            len(sample_listeners), sample_cache_hits, sample_cache_misses)
+        : (exists('*listener_add')
+            ? 'disabled by g:simpleminimap_incremental; every render re-reads the whole buffer'
+            : 'needs listener_add()')),
     printf('[%s] request timeout: %s', RequestTimeoutMs() > 0 ? 'OK' : 'WARN',
       RequestTimeoutMs() > 0
         ? printf('%dms, %d expired so far', RequestTimeoutMs(), backend_timeouts)
@@ -2936,6 +3098,7 @@ export def DebugStatus(): dict<any>
     backend_protocol: backend_protocol,
     daemon_version: daemon_version,
     unknown_options: UnknownOptions(),
+    sample_cache: SampleCacheStats(),
     backend_latency_ms: backend_latency_ms,
     pending_requests: deepcopy(requests),
   }
@@ -2952,6 +3115,7 @@ export def Stop()
   endfor
   StopBackend(false)
   sessions = {}
+  ReleaseUnusedListeners()
   requests = {}
   incoming = {}
   backend_restart_attempts = 0

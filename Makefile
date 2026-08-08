@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-timeout test-vim-health test-vim-doc test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-timeout test-vim-health test-vim-doc test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -51,6 +51,12 @@ test-vim-projection:
 # enough that one minimap row covers a real band of lines.
 test-vim-overlays:
 	vim -Nu NONE -n -es -S tests/vim_overlays.vim
+
+# Sample-cache accounting on a 4,000-line buffer: the point of the test is what
+# a single keystroke costs, which only means something when the buffer is much
+# taller than the minimap.
+test-vim-incremental:
+	vim -Nu NONE -n -es -S tests/vim_incremental.vim
 
 # The wedged-daemon mode is selected by an environment variable read at daemon
 # start, so it needs its own Vim instance.

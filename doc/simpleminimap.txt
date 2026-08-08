@@ -280,6 +280,23 @@ All options must be set before the plugin is loaded.
         budget instead: the rows decided so far are shown and the statusline
         gains a "~" marker to say the overview is incomplete.
 
+*g:simpleminimap_incremental*
+        Boolean number, default 1.  Cache each band's sampled text and let a
+        |listener_add()| callback invalidate only the bands an edit touched.
+
+        A render reads up to twelve source lines per minimap row and normalises
+        each one into display cells, so a 60-row minimap reads 720 lines per
+        render -- and without this, typing one character paid all of it again
+        on every |g:simpleminimap_debounce| tick, on the main thread.  With it,
+        an edit inside one line re-samples that band only; adding or removing
+        lines moves every band and drops the cache wholesale.
+
+        The listener queue is flushed before the cache is read, so a cached
+        band can never be older than the edit that scheduled the render.
+        |:SimpleMinimapRefresh|! reaches past the cache as well.  Set to 0 to
+        re-read the whole buffer on every render.  |:SimpleMinimapHealth|
+        reports how many bands were reused and how many were resampled.
+
 *g:simpleminimap_shading*
         Boolean number, default 1.  Shade every rendered minimap cell by its
         code density using text properties: sparse cells use

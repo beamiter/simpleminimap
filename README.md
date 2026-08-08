@@ -191,6 +191,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_overlays` | `['signs', 'search']` | 哪些叠加层会画在渲染结果之上；内置名字为 `signs` / `search` / `quickfix` / `loclist` / `marks` / `diff`，也可以是 `simpleminimap#RegisterOverlay()` 注册的第三方名字 |
 | `g:simpleminimap_show_signs` | `1` | 是否把源缓冲区中的 Vim signs 聚合显示到 minimap |
 | `g:simpleminimap_show_search` | `1` | 是否把 `hlsearch` 匹配投影到 minimap（需要 `matchbufline()`）；按行区间扫描并在首个命中处停止，不再跳过大文件 |
+| `g:simpleminimap_incremental` | `1` | 是否按行区间缓存采样文本，并用 `listener_add()` 只失效被编辑触及的区间；设为 `0` 则每次渲染都重读整个 buffer |
 | `g:simpleminimap_shading` | `1` | 是否按密度给 minimap 单元格分档着色（需要 `+textprop`） |
 | `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |

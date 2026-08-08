@@ -111,6 +111,15 @@ All notable changes to SimpleMinimap are documented here.
 - quickfix 与 location list 的投影在 `QuickFixCmdPost` 上立即刷新,不必等到下一次
   `CursorHold`(最长 `'updatetime'`)才看到新的 `:grep` 结果。
 - 新增高亮组 `SimpleMinimapMark`(默认链接 `Identifier`)。
+- 增量采样(`g:simpleminimap_incremental`,默认开)。此前每次渲染都要重读整个
+  buffer:每个 minimap 行要取最多 12 行源码并逐字符归一化成显示单元格,60 行的
+  minimap 就是 720 次——而且在一行里敲一个字符,这 720 次会在每个防抖周期里原样
+  再付一遍,全在主线程上。现在按行区间缓存采样结果,由 `listener_add()` 回调只失效
+  被编辑触及的区间;增删行会移动所有区间边界,因此整块丢弃。读缓存前先
+  `listener_flush()`,所以缓存里的区间不可能比触发这次渲染的那次编辑更旧——否则
+  body 签名会与上一次相同,渲染被当成缓存命中跳过,minimap 就再也不会自己纠正。
+  `:SimpleMinimapRefresh!` 同样绕过缓存,`:SimpleMinimapHealth` 报告复用与重采样的
+  区间数。
 - 每条命令都补齐了 `<Plug>` 目标(open/close/unpin/refresh/refresh-all/style/
   restart/health/log)。此前 14 条命令只有 4 个 `<Plug>`,关掉默认映射的用户只能
   手写 `<Cmd>SimpleMinimap...<CR>` 字面量,插件这边既无法重定义也无法弃用。
