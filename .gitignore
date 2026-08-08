@@ -10,3 +10,6 @@
 tests/*-errors.log
 tests/*divergence.log
 tests/core-not-executable
+
+# Scratch help-tag directory written by tests/vim_doc.vim.
+tests/vim-doc-tags/

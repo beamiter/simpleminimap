@@ -102,8 +102,16 @@ Both values must be 1.
         It also reports configuration problems: a 'encoding' that cannot
         represent the configured render style, and any g:simpleminimap_*
         variable that is not an option this plugin reads -- a misspelled option
-        name is otherwise ignored in silence for ever.  |simpleminimap#UnknownOptions()|
-        returns that list on its own.
+        name is otherwise ignored in silence for ever.
+        |simpleminimap#UnknownOptions()| returns that list on its own.
+
+                                          *simpleminimap#UnknownOptions()*
+                                          *simpleminimap#KnownOptions()*
+        simpleminimap#UnknownOptions() returns the sorted list of
+        g:simpleminimap_* variables this plugin does not read, without the
+        rest of the report -- useful from a configuration test of your own.
+        simpleminimap#KnownOptions() returns the sorted list of every option
+        name the plugin does read.
 
 :SimpleMinimapDebug                                 *:SimpleMinimapDebug*
         Echo the complete internal state dictionary.
@@ -248,7 +256,7 @@ All options must be set before the plugin is loaded.
         Spending that budget trips the crash-loop breaker: the failure is
         reported once and nothing is respawned again -- not on a timer and not
         on the next render -- until |:SimpleMinimapRestart| re-arms it.  The
-        budget is deliberately *not* reset by a successful render, because a
+        budget is deliberately NOT reset by a successful render, because a
         daemon that crashes after every render makes progress every time and
         would otherwise be respawned for ever.
         This governs every automatic restart, including the one triggered by

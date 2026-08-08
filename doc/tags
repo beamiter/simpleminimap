@@ -51,8 +51,9 @@ g:simpleminimap_show_signs	simpleminimap.txt	/*g:simpleminimap_show_signs*
 g:simpleminimap_show_statusline	simpleminimap.txt	/*g:simpleminimap_show_statusline*
 g:simpleminimap_side	simpleminimap.txt	/*g:simpleminimap_side*
 g:simpleminimap_width	simpleminimap.txt	/*g:simpleminimap_width*
-not	simpleminimap.txt	/*not*
+simpleminimap#KnownOptions()	simpleminimap.txt	/*simpleminimap#KnownOptions()*
 simpleminimap#StatuslineExpr()	simpleminimap.txt	/*simpleminimap#StatuslineExpr()*
+simpleminimap#UnknownOptions()	simpleminimap.txt	/*simpleminimap#UnknownOptions()*
 simpleminimap-commands	simpleminimap.txt	/*simpleminimap-commands*
 simpleminimap-contents	simpleminimap.txt	/*simpleminimap-contents*
 simpleminimap-daemon	simpleminimap.txt	/*simpleminimap-daemon*

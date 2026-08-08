@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-doc test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -56,12 +56,17 @@ test-vim-timeout:
 test-vim-health:
 	vim -Nu NONE -n -es -S tests/vim_health.vim
 
+# doc/simpleminimap.txt as a help file: dead |links| and *tags* claimed for
+# generic words are invisible to every other target here and to reading it.
+test-vim-doc:
+	vim -Nu NONE -n -i NONE -es -S tests/vim_doc.vim
+
 test-vim-real: build
 	SIMPLEMINIMAP_TEST_DAEMON="$(CURDIR)/target/release/simpleminimap-daemon" \
 		vim -Nu NONE -n -es -S tests/vim_integration.vim
 
 clean:
-	rm -rf target lib/simpleminimap-daemon lib/simpleminimap-daemon.exe tests/vim-errors.log
+	rm -rf target lib/simpleminimap-daemon lib/simpleminimap-daemon.exe tests/vim-errors.log tests/vim-doc-tags
 
 # ---------------------------------------------------------------------------
 # simplecore: the vendored daemon supervisor shared by the simple* suite.

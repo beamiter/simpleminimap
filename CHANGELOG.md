@@ -77,6 +77,16 @@ All notable changes to SimpleMinimap are documented here.
   另外会无条件丢弃缓存,以覆盖“把 `g:simpleminimap_daemon_path` 指向另一个同龄
   同大小的构建”这种 stamp 分辨不出的情况。
 
+- help 里 `|simpleminimap#UnknownOptions()|` 指向一个从未定义过的 tag,在帮助里对它
+  按 CTRL-] 只会得到 `E149`。现在补上 `*simpleminimap#UnknownOptions()*` 与
+  `*simpleminimap#KnownOptions()*` 两个 tag,并说明它们各自返回什么。
+- `g:simpleminimap_auto_restart` 条目里用 `*not*` 做强调,而 `*...*` 在 help 里是
+  tag 定义语法:`:helptags` 因此把 `not` 登记成了本插件的 tag,任何装了本插件的用户
+  执行 `:help not` 都会跳到这里——在全局共享的 tag 命名空间里劫持了一个通用词。
+- 新增 `make test-vim-doc` / `tests/vim_doc.vim`:校验 `doc/tags` 与 help 文件同步、
+  本插件定义的每个 tag 都在自己的命名空间内、以及文中每个 `|link|` 都能解析。
+  上面两个缺陷都在其他所有测试和肉眼审阅之下不可见,这个测试同时抓到它们。
+
 ### 构建与 CI 修复
 
 - CI 的 msrv 作业固定在 `dtolnay/rust-toolchain@1.85.0`,而 `Cargo.toml` 声明的是
