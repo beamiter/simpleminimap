@@ -164,6 +164,19 @@ All options must be set before the plugin is loaded.
 *g:simpleminimap_show_statusline*
         Boolean number, default 1.  Show a small SimpleMinimap statusline.
 
+                                            *simpleminimap#StatuslineExpr()*
+        The minimap owns the window-local 'statusline', 'wincolor' and
+        'winfixwidth' of its own window and re-applies them on BufWinEnter and
+        WinEnter, so a statusline manager that rewrites &l:statusline for every
+        window cannot blank the minimap title.  A statusline manager that wants
+        to cooperate rather than be corrected can ask for the canonical value
+        instead of hard-coding it: >
+
+          if &filetype ==# 'simpleminimap'
+            &l:statusline = simpleminimap#StatuslineExpr()
+          endif
+<       It returns an empty string when |g:simpleminimap_show_statusline| is 0.
+
 *g:simpleminimap_show_signs*
         Boolean number, default 1.  Project signs placed in the tracked buffer
         by Git, LSP, lint and other integrations onto minimap rows.  Signs are

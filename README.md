@@ -194,6 +194,19 @@ minimap 缓冲区内的按键：
 会以相同方式刷新所有存活 session，同时保持当前 tab/window 不变。已经关闭或
 失效的 session 只会被清理，不会因全局刷新而重新打开。
 
+minimap 窗口的 `statusline`、`wincolor`、`winfixwidth` 由插件自己负责：在
+`BufWinEnter` / `WinEnter` 上会重新断言一次，因此逐窗口改写 `&l:statusline`
+的状态栏插件不会再把 minimap 标题清空。想主动配合而不是被纠正的状态栏管理器，
+可以直接取用规范值，不必硬编码：
+
+```vim
+if &filetype ==# 'simpleminimap'
+  let &l:statusline = simpleminimap#StatuslineExpr()
+endif
+```
+
+`g:simpleminimap_show_statusline` 为 0 时它返回空串。
+
 示例：
 
 ```vim

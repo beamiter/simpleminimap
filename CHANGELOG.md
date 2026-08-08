@@ -2,6 +2,19 @@
 
 All notable changes to SimpleMinimap are documented here.
 
+## Unreleased - 2026-08-08
+
+### 修复
+
+- minimap 窗口的 `statusline` / `wincolor` / `winfixwidth` 此前只在建窗时设置
+  一次,之后没有任何路径再写回。任何逐窗口改写 `&l:statusline` 的状态栏插件
+  (本套件自己就带一个)都会在 `WinEnter` 上把 minimap 标题永久清空,只能重开
+  窗口才恢复。现在这三项在 `BufWinEnter` / `WinEnter` 上重新断言,`ColorScheme`
+  也会一并恢复 `wincolor`;非 minimap 窗口只付出一次 dict 查找的代价。
+- 新增 `simpleminimap#StatuslineExpr()`,返回 minimap 状态栏的规范值(
+  `g:simpleminimap_show_statusline` 为 0 时返回空串)。状态栏管理器不必再硬编码
+  那串字面量,也就不会与插件版本漂移。
+
 ## Unreleased - 2026-08-05
 
 ### 交互演进

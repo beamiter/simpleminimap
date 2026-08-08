@@ -41,6 +41,41 @@ call assert_equal('', &buftype)
 call assert_equal(0, &winfixwidth)
 call assert_true(winwidth(0) > g:simpleminimap_width)
 
+" The minimap defends its window-local options.  Any statusline manager that
+" rewrites &l:statusline on WinEnter used to blank the title permanently.
+call setline(1, ['source one', 'source two'])
+let s:defend_source = win_getid()
+SimpleMinimapOpen
+let s:session = values(simpleminimap#DebugStatus().sessions)[0]
+call assert_match('simpleminimap#Statusline()', simpleminimap#StatuslineExpr())
+call assert_equal(simpleminimap#StatuslineExpr(),
+      \ getwinvar(s:session.winid, '&statusline'))
+call win_gotoid(s:session.winid)
+call setwinvar(s:session.winid, '&statusline', 'stolen')
+call setwinvar(s:session.winid, '&winfixwidth', 0)
+call setwinvar(s:session.winid, '&wincolor', '')
+doautocmd WinEnter
+call assert_equal(simpleminimap#StatuslineExpr(),
+      \ getwinvar(s:session.winid, '&statusline'),
+      \ 'WinEnter restores the minimap statusline')
+call assert_equal(1, getwinvar(s:session.winid, '&winfixwidth'),
+      \ 'WinEnter restores winfixwidth')
+call assert_equal('SimpleMinimapNormal', getwinvar(s:session.winid, '&wincolor'),
+      \ 'WinEnter restores wincolor')
+" A colour-scheme reload re-asserts the same state without a window change.
+call setwinvar(s:session.winid, '&wincolor', '')
+doautocmd ColorScheme
+call assert_equal('SimpleMinimapNormal', getwinvar(s:session.winid, '&wincolor'),
+      \ 'ColorScheme restores wincolor')
+" Entering an ordinary window leaves it alone.
+call win_gotoid(s:defend_source)
+call setwinvar(s:defend_source, '&statusline', 'user statusline')
+doautocmd WinEnter
+call assert_equal('user statusline', getwinvar(s:defend_source, '&statusline'),
+      \ 'non-minimap windows keep their own statusline')
+call setwinvar(s:defend_source, '&statusline', '')
+SimpleMinimapClose
+
 " Auto-open is opt-in and uses the same eligibility/session safeguards.
 let g:simpleminimap_auto_open = 1
 call simpleminimap#MaybeAutoOpen()

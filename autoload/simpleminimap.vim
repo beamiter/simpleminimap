@@ -1226,17 +1226,56 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
 enddef
 
 
+# The canonical minimap 'statusline'.  Exported so a statusline manager can ask
+# for the value instead of hard-coding the literal and drifting from it.
+export def StatuslineExpr(): string
+  return get(g:, 'simpleminimap_show_statusline', 1)
+    ? '%#SimpleMinimapTitle#%{simpleminimap#Statusline()}%*'
+    : ''
+enddef
+
+
+# The window-local state the minimap defends for the whole life of the window.
+# Setting it once at creation is not enough: a statusline manager's WinEnter
+# handler, a `:windo setlocal`, a session restore or a colour-scheme reload all
+# rewrite window-local options behind our back, and the minimap then shows an
+# empty title (or loses winfixwidth and gets squeezed) until it is reopened.
+# Idempotent and compare-before-assign, because ReassertWindow() runs it on
+# every WinEnter into a minimap window.
+def ApplyWindowOptions(winid: number)
+  var statusline = StatuslineExpr()
+  if getwinvar(winid, '&statusline', '') !=# statusline
+    setwinvar(winid, '&statusline', statusline)
+  endif
+  if getwinvar(winid, '&wincolor', '') !=# 'SimpleMinimapNormal'
+    setwinvar(winid, '&wincolor', 'SimpleMinimapNormal')
+  endif
+  # getwinvar() hands back a Bool for a boolean option under Vim9, so compare
+  # with ! rather than against 1.
+  if !getwinvar(winid, '&winfixwidth', false)
+    setwinvar(winid, '&winfixwidth', 1)
+  endif
+enddef
+
+
+# Re-apply the defended options when a minimap window is entered.  Runs on
+# every BufWinEnter/WinEnter in the editor, so it must stay cheap: for a
+# non-minimap window this is one dict lookup and nothing else.
+export def ReassertWindow(winid: number)
+  if winid <= 0 || !has_key(sessions, string(winid))
+    return
+  endif
+  ApplyWindowOptions(winid)
+enddef
+
+
 def ConfigureMinimapWindow(winid: number, bufnr: number)
   win_execute(winid, 'setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted nomodeline undolevels=-1')
   win_execute(winid, 'setlocal nowrap nonumber norelativenumber nocursorcolumn nocursorline')
   win_execute(winid, 'setlocal signcolumn=no foldcolumn=0 nofoldenable nolist')
-  win_execute(winid, 'setlocal scrolloff=0 sidescrolloff=0 winfixwidth')
-  win_execute(winid, 'setlocal filetype=simpleminimap wincolor=SimpleMinimapNormal')
-  if get(g:, 'simpleminimap_show_statusline', 1)
-    setwinvar(winid, '&statusline', '%#SimpleMinimapTitle#%{simpleminimap#Statusline()}%*')
-  else
-    setwinvar(winid, '&statusline', '')
-  endif
+  win_execute(winid, 'setlocal scrolloff=0 sidescrolloff=0')
+  win_execute(winid, 'setlocal filetype=simpleminimap')
+  ApplyWindowOptions(winid)
   setbufvar(bufnr, '&modifiable', 0)
   setbufvar(bufnr, '&modified', 0)
 
@@ -1378,6 +1417,19 @@ export def SetupHighlights()
   highlight default link SimpleMinimapShadeMid Comment
   highlight default link SimpleMinimapShadeHigh Normal
   highlight default link SimpleMinimapTitle Title
+enddef
+
+
+# A colour-scheme reload re-defines every group and can leave a window pointing
+# at a group that no longer exists, so re-link ours *and* re-assert the
+# window-local state that depends on them.
+export def OnColorScheme()
+  SetupHighlights()
+  for session in values(sessions)
+    if WindowExists(get(session, 'winid', 0))
+      ApplyWindowOptions(session.winid)
+    endif
+  endfor
 enddef
 
 

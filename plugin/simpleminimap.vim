@@ -88,6 +88,9 @@ simpleminimap#SetupHighlights()
 augroup SimpleMinimap
   autocmd!
   autocmd BufEnter,WinEnter * try | call simpleminimap#OnContextChanged() | catch | endtry
+  # Runs after every other plugin's WinEnter handler has had its turn, so a
+  # statusline manager that rewrites &l:statusline cannot blank the minimap.
+  autocmd BufWinEnter,WinEnter * try | call simpleminimap#ReassertWindow(win_getid()) | catch | endtry
   autocmd TextChanged,TextChangedI,BufWritePost * try | call simpleminimap#OnTextChanged(str2nr(expand('<abuf>'))) | catch | endtry
   autocmd CursorMoved,CursorMovedI * try | call simpleminimap#OnCursorMoved(win_getid()) | catch | endtry
   autocmd TabEnter * try | call simpleminimap#OnContextChanged() | catch | endtry
@@ -96,7 +99,7 @@ augroup SimpleMinimap
   autocmd CursorHold,CursorHoldI * try | call simpleminimap#OnSignsChanged(str2nr(expand('<abuf>'))) | catch | endtry
   autocmd WinClosed * try | call simpleminimap#OnWinClosed(str2nr(expand('<amatch>'))) | catch | endtry
   autocmd BufWipeout * try | call simpleminimap#OnBufferWipeout(str2nr(expand('<abuf>'))) | catch | endtry
-  autocmd ColorScheme * try | call simpleminimap#SetupHighlights() | catch | endtry
+  autocmd ColorScheme * try | call simpleminimap#OnColorScheme() | catch | endtry
   autocmd VimLeavePre * try | call simpleminimap#Stop() | catch | endtry
   if exists('##WinScrolled')
     autocmd WinScrolled * try | call simpleminimap#OnWinScrolled(str2nr(expand('<amatch>'))) | catch | endtry
