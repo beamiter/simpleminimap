@@ -11,25 +11,33 @@ const RESTART_WINDOW_MS = 60000.0
 # nowhere in a multi-million-line buffer -- and marks the projection partial.
 const SEARCH_CHUNK_LINES = 400
 const SEARCH_MAX_SCAN_LINES = 200000
-# Multiple signs can land on one minimap row; the highest priority wins.
-const SIGN_PRIORITY = {
-  error: 6,
-  warning: 5,
-  info: 4,
-  delete: 3,
-  change: 2,
-  add: 1,
+# One minimap row covers many source lines, so several overlay entries -- from
+# several providers -- routinely land on the same row.  The highest priority
+# category wins it: an error and a git "add" on the same row is an error row.
+const OVERLAY_PRIORITY = {
+  error: 7,
+  warning: 6,
+  info: 5,
+  delete: 4,
+  change: 3,
+  add: 2,
+  mark: 1,
   other: 0,
 }
-const SIGN_GROUPS = {
+const OVERLAY_GROUPS = {
   error: 'SimpleMinimapSignError',
   warning: 'SimpleMinimapSignWarning',
   info: 'SimpleMinimapSignInfo',
   delete: 'SimpleMinimapSignDelete',
   change: 'SimpleMinimapSignChange',
   add: 'SimpleMinimapSignAdd',
+  mark: 'SimpleMinimapMark',
   other: 'SimpleMinimapSign',
 }
+# Bounds the diff overlay's line probing across all bands of one pass.
+const DIFF_MAX_PROBE_LINES = 20000
+const DEFAULT_OVERLAYS = ['signs', 'search']
+const BUILTIN_OVERLAYS = ['signs', 'search', 'quickfix', 'loclist', 'marks', 'diff']
 # Density shade classes reported per rendered cell by the daemon.
 const SHADE_TYPES = {
   '1': 'SimpleMinimapShadeLow',
@@ -989,7 +997,7 @@ def RenderSession(key: string)
   if !force && !empty(session.rows) && signature ==# get(session, 'last_signature', '')
     # The daemon would produce identical output; refresh the overlays only.
     session.render_skips = get(session, 'render_skips', 0) + 1
-    UpdateSigns(key)
+    UpdateOverlays(key)
     UpdateViewport(key)
     UpdateSearch(key)
     return
@@ -1265,44 +1273,305 @@ def SignCategory(name: string): string
 enddef
 
 
-def UpdateSigns(key: string)
+# ---------------------------------------------------------------------------
+# Overlay providers.
+#
+# Everything painted on top of the rendered rows -- signs, quickfix entries,
+# marks, diff hunks -- has the same shape: source line numbers carrying a
+# severity-like category.  One registry instead of one bespoke routine per
+# source means a new source is a function, and it means a sibling plugin can
+# feed the minimap without first turning its state into Vim signs.  Signs were
+# the only channel before, which forced every producer into the sign column
+# whether the user wanted it there or not, and left `:grep` results, the
+# location list, marks and `:diffthis` invisible.
+#
+# A provider is called with a context dictionary:
+#   bufnr  the source buffer number
+#   winid  the source window ID
+#   rows   the row bands currently rendered, [{start, end}, ...]
+# and returns a list of {lnum, category} dictionaries.  Unknown categories fall
+# back to 'other'; a provider that throws is logged and skipped rather than
+# allowed to break the redraw that called it.
+# ---------------------------------------------------------------------------
+var overlay_providers: dict<any> = {}
+var overlay_order: list<string> = []
+
+export def RegisterOverlay(name: string, Provider: func, opts: dict<any> = {})
+  if name ==# ''
+    return
+  endif
+  if !has_key(overlay_providers, name)
+    overlay_order->add(name)
+  endif
+  overlay_providers[name] = {Provider: Provider, opts: opts}
+enddef
+
+
+# Every overlay name this plugin knows how to draw, registration order first.
+# 'search' is not a row provider -- it has its own bounded band scan and its own
+# invalidation key -- but it is configured through the same list, so it belongs
+# in the answer.
+export def OverlayNames(): list<string>
+  var names = copy(overlay_order)
+  if index(names, 'search') < 0
+    names->add('search')
+  endif
+  return names
+enddef
+
+
+def ConfiguredOverlays(): list<string>
+  var configured = get(g:, 'simpleminimap_overlays', DEFAULT_OVERLAYS)
+  return type(configured) == v:t_list ? configured : DEFAULT_OVERLAYS
+enddef
+
+
+export def OverlayEnabled(name: string): bool
+  return index(ConfiguredOverlays(), name) >= 0
+enddef
+
+
+def SignsOverlay(context: dict<any>): list<dict<any>>
+  # Kept as a separate switch from the overlay list: turning signs off is the
+  # documented meaning of this option and predates the registry.
+  if !get(g:, 'simpleminimap_show_signs', 1)
+    return []
+  endif
+  var placed: list<any> = []
+  try
+    placed = sign_getplaced(context.bufnr, {group: '*'})
+  catch
+    Log('could not read source signs: ' .. v:exception)
+    return []
+  endtry
+  if empty(placed) || empty(get(placed[0], 'signs', []))
+    return []
+  endif
+  var entries: list<dict<any>> = []
+  for sign in placed[0].signs
+    entries->add({
+      lnum: get(sign, 'lnum', 0),
+      category: SignCategory(get(sign, 'name', '')),
+    })
+  endfor
+  return entries
+enddef
+
+
+def QuickfixCategory(entry: dict<any>): string
+  var kind = toupper(get(entry, 'type', ''))
+  if kind ==# 'E'
+    return 'error'
+  elseif kind ==# 'W'
+    return 'warning'
+  elseif kind ==# 'I' || kind ==# 'N'
+    return 'info'
+  endif
+  return 'other'
+enddef
+
+
+def QuickfixEntries(items: list<any>, bufnr: number): list<dict<any>>
+  var entries: list<dict<any>> = []
+  for item in items
+    if get(item, 'bufnr', 0) != bufnr || get(item, 'valid', 0) == 0
+      continue
+    endif
+    var lnum = get(item, 'lnum', 0)
+    if lnum > 0
+      entries->add({lnum: lnum, category: QuickfixCategory(item)})
+    endif
+  endfor
+  return entries
+enddef
+
+
+def QuickfixOverlay(context: dict<any>): list<dict<any>>
+  return QuickfixEntries(getqflist(), context.bufnr)
+enddef
+
+
+def LoclistOverlay(context: dict<any>): list<dict<any>>
+  if context.winid <= 0
+    return []
+  endif
+  return QuickfixEntries(getloclist(context.winid), context.bufnr)
+enddef
+
+
+# Only the marks a user sets deliberately: 'a-'z in this buffer and 'A-'Z that
+# point at this file.  The automatic ones ('. '^ '" '[ ']) move on every edit
+# and would turn the overview into noise that changes as you type.
+def MarksOverlay(context: dict<any>): list<dict<any>>
+  if !exists('*getmarklist')
+    return []
+  endif
+  var entries: list<dict<any>> = []
+  for mark in getmarklist(context.bufnr)
+    var pos = get(mark, 'pos', [])
+    if get(mark, 'mark', '') =~# "^'[a-z]$" && len(pos) >= 2 && pos[1] > 0
+      entries->add({lnum: pos[1], category: 'mark'})
+    endif
+  endfor
+  var file = fnamemodify(bufname(context.bufnr), ':p')
+  if file ==# ''
+    return entries
+  endif
+  for mark in getmarklist()
+    var pos = get(mark, 'pos', [])
+    if get(mark, 'mark', '') =~# "^'[A-Z]$" && len(pos) >= 2 && pos[1] > 0
+        && fnamemodify(get(mark, 'file', ''), ':p') ==# file
+      entries->add({lnum: pos[1], category: 'mark'})
+    endif
+  endfor
+  return entries
+enddef
+
+
+def DiffCategory(id: any): string
+  if type(id) != v:t_number || id <= 0
+    return ''
+  endif
+  var name = synIDattr(id, 'name')
+  if name =~? 'DiffAdd'
+    return 'add'
+  elseif name =~? 'DiffDelete'
+    return 'delete'
+  endif
+  return 'change'
+enddef
+
+
+# Answers "does anything in this band differ, and how" for each band, running
+# inside the source window because diff_hlID() only ever answers for the
+# current one.  Exported so the legacy context win_execute() creates can name
+# it; it is an implementation detail of the diff overlay, not public API.
+#
+# Each band is left at its first hit, exactly as the search projection is, so
+# the usual case costs a handful of probes per band; the shared budget bounds
+# the pathological one (two identical files in diff mode, where no band ever
+# hits and every line is visited).
+export def DiffProbe(bands: list<any>): list<string>
+  var result: list<string> = []
+  var budget = DIFF_MAX_PROBE_LINES
+  var last = line('$')
+  for band in bands
+    var category = ''
+    var line_number = band[0]
+    var band_end = min([band[1], last])
+    while line_number <= band_end && budget > 0
+      budget -= 1
+      category = DiffCategory(diff_hlID(line_number, 1))
+      if category !=# ''
+        break
+      endif
+      line_number += 1
+    endwhile
+    result->add(category)
+  endfor
+  return result
+enddef
+
+
+# Lines deleted relative to the other buffer are drawn as filler, which has no
+# line number here, so a pure deletion shows up on neither side's minimap --
+# the same thing you see in the diff itself.
+def DiffOverlay(context: dict<any>): list<dict<any>>
+  var winid = context.winid
+  if winid <= 0 || !getwinvar(winid, '&diff', false) || empty(context.rows)
+    return []
+  endif
+  var bands: list<any> = []
+  for row in context.rows
+    bands->add([row.start, row.end])
+  endfor
+  var decoded: list<any> = []
+  try
+    var raw = win_execute(winid,
+      printf('echo json_encode(simpleminimap#DiffProbe(%s))', string(bands)))
+    decoded = json_decode(trim(raw))
+  catch
+    Log('diff overlay failed: ' .. v:exception)
+    return []
+  endtry
+  var entries: list<dict<any>> = []
+  for index in range(min([len(decoded), len(context.rows)]))
+    if type(decoded[index]) == v:t_string && decoded[index] !=# ''
+      entries->add({lnum: context.rows[index].start, category: decoded[index]})
+    endif
+  endfor
+  return entries
+enddef
+
+
+RegisterOverlay('signs', SignsOverlay)
+RegisterOverlay('quickfix', QuickfixOverlay)
+RegisterOverlay('loclist', LoclistOverlay)
+RegisterOverlay('marks', MarksOverlay)
+RegisterOverlay('diff', DiffOverlay)
+
+
+def CollectOverlayEntries(session: dict<any>): list<dict<any>>
+  var context = {
+    bufnr: session.source_bufnr,
+    winid: get(session, 'source_winid', 0),
+    rows: session.rows,
+  }
+  var entries: list<dict<any>> = []
+  var configured = ConfiguredOverlays()
+  for name in overlay_order
+    if index(configured, name) < 0
+      continue
+    endif
+    # Invoked directly, never through call(): call() resolves a Funcref built
+    # by a legacy `function('Name')` against *this* Vim9 script's namespace,
+    # where a global function is not visible under its bare name, so every
+    # third-party provider would fail with E117.
+    var Provider: func = overlay_providers[name].Provider
+    try
+      entries += Provider(context)
+    catch
+      Log(printf('overlay provider %s failed: %s', name, v:exception))
+    endtry
+  endfor
+  return entries
+enddef
+
+
+def UpdateOverlays(key: string)
   if !has_key(sessions, key)
     return
   endif
   var session = sessions[key]
   ClearSignMatches(key)
-  if !get(g:, 'simpleminimap_show_signs', 1)
-      || !WindowExists(session.winid)
+  if !WindowExists(session.winid)
       || empty(session.rows)
       || !bufexists(session.source_bufnr)
     return
   endif
 
-  var placed: list<any> = []
-  try
-    placed = sign_getplaced(session.source_bufnr, {group: '*'})
-  catch
-    Log('could not read source signs: ' .. v:exception)
-    return
-  endtry
-  if empty(placed) || empty(get(placed[0], 'signs', []))
-    return
-  endif
-
   var row_category: dict<string> = {}
-  # A file can carry thousands of signs projected onto a few dozen rows, so
-  # stop as soon as every row has reached the category nothing can outrank.
+  # A file can carry thousands of signs or quickfix entries projected onto a
+  # few dozen rows, so stop as soon as every row has reached the category
+  # nothing can outrank.
   var settled = 0
   var row_count = len(session.rows)
-  for sign in placed[0].signs
-    var minimap_row = RowForSourceLine(session.rows, get(sign, 'lnum', 0))
+  for entry in CollectOverlayEntries(session)
+    var source_line = get(entry, 'lnum', 0)
+    if source_line < 1
+      continue
+    endif
+    var minimap_row = RowForSourceLine(session.rows, source_line)
     if minimap_row <= 0
       continue
     endif
-    var category = SignCategory(get(sign, 'name', ''))
+    var category = get(entry, 'category', 'other')
+    if !has_key(OVERLAY_PRIORITY, category)
+      category = 'other'
+    endif
     var row_key = string(minimap_row)
     var existing = get(row_category, row_key, '')
-    if existing ==# '' || SIGN_PRIORITY[category] > SIGN_PRIORITY[existing]
+    if existing ==# '' || OVERLAY_PRIORITY[category] > OVERLAY_PRIORITY[existing]
       row_category[row_key] = category
       if category ==# 'error'
         settled += 1
@@ -1328,7 +1597,7 @@ def UpdateSigns(key: string)
   session.sign_rows = sort(all_rows, 'n')
   session.sign_categories = row_category
   for [category, rows] in items(category_rows)
-    session.sign_matches->add(matchaddpos(SIGN_GROUPS[category], sort(rows, 'n'), 15, -1, {window: session.winid}))
+    session.sign_matches->add(matchaddpos(OVERLAY_GROUPS[category], sort(rows, 'n'), 15, -1, {window: session.winid}))
   endfor
 enddef
 
@@ -1340,6 +1609,7 @@ def UpdateSearch(key: string, force: bool = false)
   var session = sessions[key]
   var supported = exists('*matchbufline')
   var enabled = supported && get(g:, 'simpleminimap_show_search', 1)
+    && OverlayEnabled('search')
   var state: list<any> = enabled
     ? [v:hlsearch, @/, getbufvar(session.source_bufnr, 'changedtick', 0)]
     : []
@@ -1540,7 +1810,7 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
   backend_error = ''
   SetBufferLines(session.bufnr, output)
   ApplyShading(key, output)
-  UpdateSigns(key)
+  UpdateOverlays(key)
   UpdateViewport(key)
   UpdateSearch(key, true)
   redrawstatus
@@ -1738,6 +2008,7 @@ export def SetupHighlights()
   highlight default link SimpleMinimapSignAdd DiffAdd
   highlight default link SimpleMinimapSignChange DiffChange
   highlight default link SimpleMinimapSignDelete DiffDelete
+  highlight default link SimpleMinimapMark Identifier
   highlight default link SimpleMinimapShadeLow NonText
   highlight default link SimpleMinimapShadeMid Comment
   highlight default link SimpleMinimapShadeHigh Normal
@@ -2376,9 +2647,22 @@ export def OnSignsChanged(bufnr: number)
   endif
   for [key, session] in items(sessions)
     if get(session, 'source_bufnr', -1) == bufnr
-      UpdateSigns(key)
+      UpdateOverlays(key)
       UpdateSearch(key)
     endif
+  endfor
+enddef
+
+
+# Overlay sources that change on a command rather than on idle time -- the
+# quickfix and location lists.  Waiting for the next CursorHold would leave the
+# minimap showing the results of the previous :grep for up to 'updatetime'.
+export def OnOverlaysChanged()
+  if internal_change
+    return
+  endif
+  for key in keys(sessions)
+    UpdateOverlays(key)
   endfor
 enddef
 
@@ -2515,6 +2799,7 @@ const KNOWN_OPTIONS = [
   'simpleminimap_ignore_filetypes',
   'simpleminimap_max_columns',
   'simpleminimap_mouse_scroll_lines',
+  'simpleminimap_overlays',
   'simpleminimap_render_style',
   'simpleminimap_request_timeout_ms',
   'simpleminimap_sampling',

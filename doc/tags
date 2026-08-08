@@ -17,6 +17,7 @@
 <Plug>(simpleminimap-toggle)	simpleminimap.txt	/*<Plug>(simpleminimap-toggle)*
 <Plug>(simpleminimap-toggle-pin)	simpleminimap.txt	/*<Plug>(simpleminimap-toggle-pin)*
 SimpleMinimapCursor	simpleminimap.txt	/*SimpleMinimapCursor*
+SimpleMinimapMark	simpleminimap.txt	/*SimpleMinimapMark*
 SimpleMinimapNormal	simpleminimap.txt	/*SimpleMinimapNormal*
 SimpleMinimapSearch	simpleminimap.txt	/*SimpleMinimapSearch*
 SimpleMinimapShadeHigh	simpleminimap.txt	/*SimpleMinimapShadeHigh*
@@ -41,6 +42,7 @@ g:simpleminimap_drag_thumb	simpleminimap.txt	/*g:simpleminimap_drag_thumb*
 g:simpleminimap_ignore_filetypes	simpleminimap.txt	/*g:simpleminimap_ignore_filetypes*
 g:simpleminimap_max_columns	simpleminimap.txt	/*g:simpleminimap_max_columns*
 g:simpleminimap_mouse_scroll_lines	simpleminimap.txt	/*g:simpleminimap_mouse_scroll_lines*
+g:simpleminimap_overlays	simpleminimap.txt	/*g:simpleminimap_overlays*
 g:simpleminimap_render_style	simpleminimap.txt	/*g:simpleminimap_render_style*
 g:simpleminimap_request_timeout_ms	simpleminimap.txt	/*g:simpleminimap_request_timeout_ms*
 g:simpleminimap_sampling	simpleminimap.txt	/*g:simpleminimap_sampling*
@@ -52,6 +54,9 @@ g:simpleminimap_show_statusline	simpleminimap.txt	/*g:simpleminimap_show_statusl
 g:simpleminimap_side	simpleminimap.txt	/*g:simpleminimap_side*
 g:simpleminimap_width	simpleminimap.txt	/*g:simpleminimap_width*
 simpleminimap#KnownOptions()	simpleminimap.txt	/*simpleminimap#KnownOptions()*
+simpleminimap#OverlayEnabled()	simpleminimap.txt	/*simpleminimap#OverlayEnabled()*
+simpleminimap#OverlayNames()	simpleminimap.txt	/*simpleminimap#OverlayNames()*
+simpleminimap#RegisterOverlay()	simpleminimap.txt	/*simpleminimap#RegisterOverlay()*
 simpleminimap#StatuslineExpr()	simpleminimap.txt	/*simpleminimap#StatuslineExpr()*
 simpleminimap#UnknownOptions()	simpleminimap.txt	/*simpleminimap#UnknownOptions()*
 simpleminimap-commands	simpleminimap.txt	/*simpleminimap-commands*

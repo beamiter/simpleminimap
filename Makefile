@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-doc test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-timeout test-vim-health test-vim-doc test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -46,6 +46,12 @@ test-vim-scroll:
 test-vim-projection:
 	vim -Nu NONE -n -es -S tests/vim_projection.vim
 
+# Quickfix, location list, marks and diff projections, plus the provider
+# registry a third-party plugin registers through.  Needs a source file long
+# enough that one minimap row covers a real band of lines.
+test-vim-overlays:
+	vim -Nu NONE -n -es -S tests/vim_overlays.vim
+
 # The wedged-daemon mode is selected by an environment variable read at daemon
 # start, so it needs its own Vim instance.
 test-vim-timeout:
@@ -66,7 +72,7 @@ test-vim-real: build
 		vim -Nu NONE -n -es -S tests/vim_integration.vim
 
 clean:
-	rm -rf target lib/simpleminimap-daemon lib/simpleminimap-daemon.exe tests/vim-errors.log tests/vim-doc-tags
+	rm -rf target lib/simpleminimap-daemon lib/simpleminimap-daemon.exe tests/vim-errors.log tests/vim-doc-tags tests/vim-overlay-*.txt
 
 # ---------------------------------------------------------------------------
 # simplecore: the vendored daemon supervisor shared by the simple* suite.

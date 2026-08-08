@@ -212,6 +212,55 @@ All options must be set before the plugin is loaded.
           endif
 <       It returns an empty string when |g:simpleminimap_show_statusline| is 0.
 
+*g:simpleminimap_overlays*
+        List of strings, default ['signs', 'search'].  Which overlays paint on
+        top of the rendered rows.  An overlay is drawn only when its name is in
+        this list; the built-in names are:
+
+          signs     signs placed in the tracked buffer, as before.  Also
+                    gated by |g:simpleminimap_show_signs|.
+          search    'hlsearch' matches of the last pattern.  Also gated by
+                    |g:simpleminimap_show_search|.
+          quickfix  |getqflist()| entries for the tracked buffer, with the
+                    entry type mapped to error / warning / info.
+          loclist   |getloclist()| entries of the tracked *window*, mapped the
+                    same way.
+          marks     the marks you set on purpose: 'a-'z in the tracked buffer
+                    and 'A-'Z pointing at its file.  The automatic marks
+                    ('. '^ '" '[ ']) are ignored -- they move on every edit.
+          diff      changed lines while the tracked window is in 'diff' mode.
+                    Lines deleted relative to the other buffer are drawn as
+                    filler and have no line number, so they appear on neither
+                    side's minimap, exactly as in the diff itself.
+
+        The quickfix and location list overlays refresh on |QuickFixCmdPost|
+        as well as on |CursorHold|, so a fresh :grep is visible immediately
+        rather than after 'updatetime'.
+                                          *simpleminimap#RegisterOverlay()*
+                                          *simpleminimap#OverlayNames()*
+                                          *simpleminimap#OverlayEnabled()*
+        A plugin can add its own overlay instead of placing signs it does not
+        otherwise want: >
+
+          def LspDiagnostics(context: dict<any>): list<dict<any>>
+            # context.bufnr  the source buffer
+            # context.winid  the source window
+            # context.rows   the bands on screen, [{start, end}, ...]
+            return [{lnum: 42, category: 'error'}]
+          enddef
+          simpleminimap#RegisterOverlay('lsp', LspDiagnostics)
+<
+        The categories are error, warning, info, delete, change, add, mark and
+        other; an unknown one degrades to "other".  When several entries -- from
+        one provider or from several -- land on the same minimap row, the most
+        severe category wins it.  A provider that throws is logged to
+        |:SimpleMinimapLog| and skipped, never allowed to break a redraw.
+
+        A registered overlay is inert until its name is added to this list, so
+        tell your users to do that.  simpleminimap#OverlayNames() returns every
+        registered name and simpleminimap#OverlayEnabled({name}) answers
+        whether one is currently active.
+
 *g:simpleminimap_show_signs*
         Boolean number, default 1.  Project signs placed in the tracked buffer
         by Git, LSP, lint and other integrations onto minimap rows.  Signs are
@@ -322,6 +371,7 @@ All options must be set before the plugin is loaded.
 *SimpleMinimapSignAdd*      Added-line signs.  Defaults to DiffAdd.
 *SimpleMinimapSignChange*   Changed-line signs.  Defaults to DiffChange.
 *SimpleMinimapSignDelete*   Deleted-line signs.  Defaults to DiffDelete.
+*SimpleMinimapMark*         Rows holding a mark.  Defaults to Identifier.
 *SimpleMinimapShadeLow*     Sparse density cells.  Defaults to NonText.
 *SimpleMinimapShadeMid*     Average density cells.  Defaults to Comment.
 *SimpleMinimapShadeHigh*    Dense cells.  Defaults to Normal.

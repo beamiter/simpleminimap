@@ -100,6 +100,17 @@ All notable changes to SimpleMinimap are documented here.
 
 ### 新增
 
+- 叠加层(overlay)提供者注册表 `simpleminimap#RegisterOverlay()`,以及在它之上的
+  quickfix / location list / marks / diff 四个内置投影。此前 minimap 只能显示
+  *别的插件已经放成 Vim sign* 的东西:`:grep` 结果、位置列表、`'a`-`'z` 标记、
+  `:diffthis` 一律看不见,而套件里的兄弟插件想喂数据给 minimap 就只能去放它们本来
+  并不想放的 sign。provider 是一个函数,拿到 `{bufnr, winid, rows}`,返回
+  `[{lnum, category}]`;抛异常的 provider 只会被记进 `:SimpleMinimapLog` 并跳过,
+  不会连累这一次重绘。由 `g:simpleminimap_overlays` 决定哪些生效,默认
+  `['signs', 'search']`——也就是与此前完全相同的行为。
+- quickfix 与 location list 的投影在 `QuickFixCmdPost` 上立即刷新,不必等到下一次
+  `CursorHold`(最长 `'updatetime'`)才看到新的 `:grep` 结果。
+- 新增高亮组 `SimpleMinimapMark`(默认链接 `Identifier`)。
 - 每条命令都补齐了 `<Plug>` 目标(open/close/unpin/refresh/refresh-all/style/
   restart/health/log)。此前 14 条命令只有 4 个 `<Plug>`,关掉默认映射的用户只能
   手写 `<Cmd>SimpleMinimap...<CR>` 字面量,插件这边既无法重定义也无法弃用。

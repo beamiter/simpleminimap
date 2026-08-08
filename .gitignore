@@ -13,3 +13,6 @@ tests/core-not-executable
 
 # Scratch help-tag directory written by tests/vim_doc.vim.
 tests/vim-doc-tags/
+
+# Fixtures written by tests/vim_overlays.vim.
+tests/vim-overlay-*.txt

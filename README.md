@@ -188,6 +188,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_side` | `'right'` | 新建 minimap 的位置：`'right'` 或 `'left'` |
 | `g:simpleminimap_daemon_path` | `''` | 后台可执行文件绝对路径；空值时自动查找 |
 | `g:simpleminimap_show_statusline` | `1` | 是否显示 minimap 状态栏标题 |
+| `g:simpleminimap_overlays` | `['signs', 'search']` | 哪些叠加层会画在渲染结果之上；内置名字为 `signs` / `search` / `quickfix` / `loclist` / `marks` / `diff`，也可以是 `simpleminimap#RegisterOverlay()` 注册的第三方名字 |
 | `g:simpleminimap_show_signs` | `1` | 是否把源缓冲区中的 Vim signs 聚合显示到 minimap |
 | `g:simpleminimap_show_search` | `1` | 是否把 `hlsearch` 匹配投影到 minimap（需要 `matchbufline()`）；按行区间扫描并在首个命中处停止，不再跳过大文件 |
 | `g:simpleminimap_shading` | `1` | 是否按密度给 minimap 单元格分档着色（需要 `+textprop`） |
@@ -251,6 +252,7 @@ let g:simpleminimap_set_default_mapping = 0
 | `SimpleMinimapSignAdd` | `DiffAdd` | Git 新增行 sign |
 | `SimpleMinimapSignChange` | `DiffChange` | Git 修改行 sign |
 | `SimpleMinimapSignDelete` | `DiffDelete` | Git 删除行 sign |
+| `SimpleMinimapMark` | `Identifier` | 标记(`'a`-`'z` / `'A`-`'Z`)所在范围 |
 | `SimpleMinimapShadeLow` | `NonText` | 稀疏密度单元格 |
 | `SimpleMinimapShadeMid` | `Comment` | 中等密度单元格 |
 | `SimpleMinimapShadeHigh` | `Normal` | 高密度单元格 |
@@ -323,6 +325,8 @@ Vim 集成测试会验证：异步握手、左右侧 session、重复打开防�
 - 这是字符密度概览，不包含 Tree-sitter/语法组颜色，也不渲染真实字体像素。
 - minimap 使用独立垂直分屏，因此会占用 Vim 的一个窗口，而不是覆盖在编辑窗口内部。
 - signs 会聚合到对应 minimap 行并使用同一个高亮组，不保留每种 sign 的原始颜色。
+- `diff` 叠加层只能标出本缓冲区里*存在*的差异行；相对另一侧被删除的行在 Vim 里
+  是 filler，没有行号，因此两侧的 minimap 都不会显示它——和 diff 本身一致。
 
 ## 许可证
 

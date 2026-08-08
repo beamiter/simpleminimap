@@ -83,6 +83,15 @@ g:simpleminimap_request_timeout_ms = type(get(g:, 'simpleminimap_request_timeout
   : ClampNumber(get(g:, 'simpleminimap_request_timeout_ms', 5000), 5000, 100, 600000)
 var configured_ignored_filetypes = get(g:, 'simpleminimap_ignore_filetypes', [])
 g:simpleminimap_ignore_filetypes = type(configured_ignored_filetypes) == v:t_list ? configured_ignored_filetypes : []
+# Which overlays paint on top of the rendered rows.  Normalised to a list of
+# strings but deliberately NOT filtered against the built-in names: a plugin
+# that calls simpleminimap#RegisterOverlay() registers after this file has run,
+# and dropping its name here would make the registry useless to everyone but
+# this plugin.
+var configured_overlays = get(g:, 'simpleminimap_overlays', ['signs', 'search'])
+g:simpleminimap_overlays = type(configured_overlays) == v:t_list
+  ? filter(copy(configured_overlays), (_, v) => type(v) == v:t_string && v !=# '')
+  : ['signs', 'search']
 
 command! SimpleMinimap simpleminimap#Toggle()
 command! SimpleMinimapOpen simpleminimap#Open()
@@ -133,6 +142,10 @@ augroup SimpleMinimap
   autocmd TabEnter * try | call simpleminimap#MaybeAutoOpen() | catch | endtry
   autocmd VimEnter * try | call simpleminimap#MaybeAutoOpen() | catch | endtry
   autocmd CursorHold,CursorHoldI * try | call simpleminimap#OnSignsChanged(str2nr(expand('<abuf>'))) | catch | endtry
+  # :grep / :make / :lvimgrep replace a whole overlay source at once; waiting
+  # for the next CursorHold would leave the previous result set on screen for
+  # up to 'updatetime'.
+  autocmd QuickFixCmdPost * try | call simpleminimap#OnOverlaysChanged() | catch | endtry
   autocmd WinClosed * try | call simpleminimap#OnWinClosed(str2nr(expand('<amatch>'))) | catch | endtry
   autocmd BufWipeout * try | call simpleminimap#OnBufferWipeout(str2nr(expand('<abuf>'))) | catch | endtry
   autocmd ColorScheme * try | call simpleminimap#OnColorScheme() | catch | endtry
