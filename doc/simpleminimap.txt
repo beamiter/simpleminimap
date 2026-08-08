@@ -203,6 +203,31 @@ All options must be set before the plugin is loaded.
         and end of each vertical band and keeps the most informative line.
         "uniform" always uses the midpoint.  Both modes remain bounded.
 
+*g:simpleminimap_display*
+        String, 'split' (default) or 'popup'.  Where the minimap is drawn.
+
+        'split' opens a real window at the edge of the tab page: it can be
+        entered, it has the key table below, a statusline title and mouse
+        navigation, and it costs |g:simpleminimap_width| columns of code width
+        for as long as it is open.
+
+        'popup' floats the minimap over the tracked window instead, flush
+        against its |g:simpleminimap_side| edge and exactly as tall, taking no
+        window at all.  Nothing that counts windows sees it, <C-w> navigation
+        is unaffected, and it follows the tracked window as splits open, close
+        and resize.
+
+        A popup cannot be entered -- that is a Vim rule, not a choice here --
+        so |:SimpleMinimapFocus| says so instead of doing nothing, and the
+        in-minimap mappings (|simpleminimap-mappings|) and the mouse
+        navigation that goes with them do not exist in this mode.  Everything that does not need the
+        cursor works the same: rendering, density shading, every overlay in
+        |g:simpleminimap_overlays|, the viewport and cursor bands,
+        |:SimpleMinimapResize|, |:SimpleMinimapStyle| and |:SimpleMinimapRefresh|.
+
+        Requires +popupwin; a Vim without it falls back to 'split' and
+        |:SimpleMinimapHealth| says so.
+
 *g:simpleminimap_side*
         String, default "right".  Use "left" to create new minimap splits at
         the far left of a tab.

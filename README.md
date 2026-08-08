@@ -186,6 +186,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_render_style` | `'braille'` | `'braille'`、`'blocks'` 或 `'ascii'` |
 | `g:simpleminimap_fill` | `'proportional'` | minimap 行数策略：`'proportional'` 每行源码占一行（直到行数用完），`'compact'` 保持历史上固定的“4 行源码 = 1 行 minimap” |
 | `g:simpleminimap_sampling` | `'adaptive'` | `'adaptive'` 会在每个采样带中选择更有信息量的代码行；`'uniform'` 固定取中点 |
+| `g:simpleminimap_display` | `'split'` | minimap 的呈现方式：`'split'` 独立窗口（可进入、有按键表与状态栏），`'popup'` 浮在被跟踪窗口之上、不占用任何窗口（只读展示，无法进入，需要 `+popupwin`） |
 | `g:simpleminimap_side` | `'right'` | 新建 minimap 的位置：`'right'` 或 `'left'` |
 | `g:simpleminimap_daemon_path` | `''` | 后台可执行文件绝对路径；空值时自动查找 |
 | `g:simpleminimap_show_statusline` | `1` | 是否显示 minimap 状态栏标题 |
@@ -325,7 +326,9 @@ Vim 集成测试会验证：异步握手、左右侧 session、重复打开防�
 ## 已知限制
 
 - 这是字符密度概览，不包含 Tree-sitter/语法组颜色，也不渲染真实字体像素。
-- minimap 使用独立垂直分屏，因此会占用 Vim 的一个窗口，而不是覆盖在编辑窗口内部。
+- 默认的 `'split'` 模式使用独立垂直分屏，因此会占用 Vim 的一个窗口；
+  `g:simpleminimap_display = 'popup'` 改为浮在编辑窗口之上、不占窗口，代价是 Vim 不允许
+  把光标移进 popup，因此该模式没有按键表、没有鼠标导航，是纯展示的概览。
 - signs 会聚合到对应 minimap 行并使用同一个高亮组，不保留每种 sign 的原始颜色。
 - `diff` 叠加层只能标出本缓冲区里*存在*的差异行；相对另一侧被删除的行在 Vim 里
   是 filler，没有行号，因此两侧的 minimap 都不会显示它——和 diff 本身一致。

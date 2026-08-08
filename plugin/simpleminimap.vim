@@ -66,6 +66,7 @@ g:simpleminimap_render_style = Choice(get(g:, 'simpleminimap_render_style', 'bra
 g:simpleminimap_sampling = Choice(get(g:, 'simpleminimap_sampling', 'adaptive'), 'adaptive', ['adaptive', 'uniform'])
 g:simpleminimap_fill = Choice(get(g:, 'simpleminimap_fill', 'proportional'), 'proportional', ['proportional', 'compact'])
 g:simpleminimap_side = Choice(get(g:, 'simpleminimap_side', 'right'), 'right', ['left', 'right'])
+g:simpleminimap_display = Choice(get(g:, 'simpleminimap_display', 'split'), 'split', ['split', 'popup'])
 var configured_daemon_path = get(g:, 'simpleminimap_daemon_path', '')
 g:simpleminimap_daemon_path = type(configured_daemon_path) == v:t_string ? configured_daemon_path : ''
 g:simpleminimap_set_default_mapping = Flag(get(g:, 'simpleminimap_set_default_mapping', 1), 1)
@@ -135,6 +136,9 @@ simpleminimap#SetupHighlights()
 augroup SimpleMinimap
   autocmd!
   autocmd BufEnter,WinEnter * try | call simpleminimap#OnContextChanged() | catch | endtry
+  # A popup does not move with the window it floats over, so it has to be put
+  # back after anything that can change the layout.
+  autocmd WinEnter,WinNew,WinClosed,TabEnter,VimResized * try | call simpleminimap#RepositionSurfaces() | catch | endtry
   # Runs after every other plugin's WinEnter handler has had its turn, so a
   # statusline manager that rewrites &l:statusline cannot blank the minimap.
   autocmd BufWinEnter,WinEnter * try | call simpleminimap#ReassertWindow(win_getid()) | catch | endtry

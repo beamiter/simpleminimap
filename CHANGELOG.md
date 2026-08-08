@@ -111,6 +111,16 @@ All notable changes to SimpleMinimap are documented here.
 - quickfix 与 location list 的投影在 `QuickFixCmdPost` 上立即刷新,不必等到下一次
   `CursorHold`(最长 `'updatetime'`)才看到新的 `:grep` 结果。
 - 新增高亮组 `SimpleMinimapMark`(默认链接 `Identifier`)。
+- 新增 popup 覆盖模式(`g:simpleminimap_display = 'popup'`,默认仍为 `'split'`)。
+  minimap 浮在被跟踪窗口之上,贴着 `g:simpleminimap_side` 那一侧、与该窗口等高,
+  完全不占用 Vim 的窗口:数窗口的插件看不见它,`<C-w>` 的肌肉记忆不受影响,分屏
+  开合与改变大小时它会跟着走。这也是本插件与 satellite.nvim / nvim-scrollview
+  之间最大的结构差异,此前 README 的“已知限制”里就写着这一条。
+  Vim 不允许把光标移进 popup——这是 Vim 的规则,不是这里的取舍——所以该模式下
+  没有缓冲区按键表、没有鼠标导航,`:SimpleMinimapFocus` 会明确告诉你而不是默默
+  什么都不做;渲染、密度着色、全部叠加层、视口/光标高亮带、resize/style/refresh
+  则与 split 模式完全一致。没有 `+popupwin` 的 Vim 自动回退到 `'split'`,
+  `:SimpleMinimapHealth` 会说明。
 - 短文件现在按比例铺满 minimap(`g:simpleminimap_fill`,默认 `'proportional'`)。
   此前的刻度固定是“4 行源码 = 1 行 minimap”,于是任何短于 minimap 高度四倍的文件都
   只画在窗口顶部一小块里:50 行高的 minimap 打开一个 40 行的文件,只画 10 行,剩下

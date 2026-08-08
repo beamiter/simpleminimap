@@ -121,8 +121,57 @@ enddef
 
 
 def WindowExists(winid: number): bool
+  if winid <= 0
+    return false
+  endif
   var tabwin = win_id2tabwin(winid)
-  return len(tabwin) >= 2 && tabwin[0] > 0 && tabwin[1] > 0
+  if len(tabwin) >= 2 && tabwin[0] > 0 && tabwin[1] > 0
+    return true
+  endif
+  # A popup window belongs to no tab page's window list, so win_id2tabwin()
+  # reports [0, 0] for a perfectly live one.  In 'popup' display mode the
+  # minimap *is* a popup, and every liveness check in here runs through this.
+  if has('popupwin')
+    try
+      return !empty(popup_getpos(winid))
+    catch
+    endtry
+  endif
+  return false
+enddef
+
+
+def DisplayMode(): string
+  return get(g:, 'simpleminimap_display', 'split') ==# 'popup' && has('popupwin')
+    ? 'popup'
+    : 'split'
+enddef
+
+
+def IsPopupSession(session: dict<any>): bool
+  return get(session, 'kind', 'split') ==# 'popup'
+enddef
+
+
+# Which tab page a session belongs to.  A split minimap is in the tab that
+# holds its window; a popup is in no window list at all, so it inherits the tab
+# of the window it is tracking -- derived rather than stored, because tab
+# numbers shift whenever a tab is closed.
+def SessionTab(session: dict<any>): number
+  if !IsPopupSession(session)
+    var split_info = WindowInfo(get(session, 'winid', 0))
+    return empty(split_info) ? 0 : get(split_info, 'tabnr', 0)
+  endif
+  var info = WindowInfo(get(session, 'source_winid', 0))
+  if !empty(info)
+    # Remembered as well as derived: while the tracked window is being closed
+    # the session would otherwise report no tab at all, become unreachable
+    # through CurrentSessionKey(), and never get the replacement window that
+    # would have repaired it.
+    session.tabnr = get(info, 'tabnr', 0)
+    return session.tabnr
+  endif
+  return get(session, 'tabnr', 0)
 enddef
 
 
@@ -223,8 +272,7 @@ enddef
 def SessionKeyForTab(tabnr: number): string
   PruneSessions()
   for [key, session] in items(sessions)
-    var info = WindowInfo(get(session, 'winid', 0))
-    if !empty(info) && get(info, 'tabnr', 0) == tabnr
+    if SessionTab(session) == tabnr
       return key
     endif
   endfor
@@ -1156,6 +1204,12 @@ def RenderSession(key: string)
   endif
 
   session.source_bufnr = WindowInfo(session.source_winid).bufnr
+  # A popup is sized to the window it floats over, and BuildRequestBody() asks
+  # the surface how many rows it has, so the move has to happen first.
+  if !RepositionSurface(key)
+    RenderMessage(key, ['SimpleMinimap', 'no editable window'])
+    return
+  endif
   var body = BuildRequestBody(key)
   if empty(body)
     RenderMessage(key, ['SimpleMinimap', 'source buffer unavailable'])
@@ -2027,19 +2081,94 @@ export def ReassertWindow(winid: number)
   if winid <= 0 || !has_key(sessions, string(winid))
     return
   endif
+  if IsPopupSession(sessions[string(winid)])
+    return
+  endif
   ApplyWindowOptions(winid)
 enddef
 
 
-def ConfigureMinimapWindow(winid: number, bufnr: number)
-  win_execute(winid, 'setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted nomodeline undolevels=-1')
+# Where a popup minimap sits: flush against the tracked window's edge, the full
+# height of that window.  Screen coordinates, because a popup is positioned on
+# the screen rather than inside the window layout.
+def PopupGeometry(source_winid: number): dict<any>
+  var winnr = win_id2win(source_winid)
+  if winnr <= 0
+    return {}
+  endif
+  var origin = win_screenpos(winnr)
+  if len(origin) < 2 || origin[0] <= 0
+    return {}
+  endif
+  var available = winwidth(winnr)
+  var height = winheight(winnr)
+  if available <= 0 || height <= 0
+    return {}
+  endif
+  # Never take the whole window: a minimap wider than the code it covers is a
+  # curtain, not an overview.
+  var width = Clamp(get(g:, 'simpleminimap_width', 18), 1, max([1, available - 1]))
+  var col = get(g:, 'simpleminimap_side', 'right') ==# 'left'
+    ? origin[1]
+    : origin[1] + available - width
+  return {line: origin[0], col: col, width: width, height: height}
+enddef
+
+
+# A popup does not move with the window it floats over, so every event that can
+# change the layout has to put it back.  Returns false when the surface could
+# not be placed, which is how a source window that has gone away is noticed.
+def RepositionSurface(key: string): bool
+  if !has_key(sessions, key)
+    return false
+  endif
+  var session = sessions[key]
+  if !IsPopupSession(session)
+    return true
+  endif
+  if !WindowExists(session.winid)
+    return false
+  endif
+  var geometry = PopupGeometry(get(session, 'source_winid', 0))
+  if empty(geometry)
+    popup_hide(session.winid)
+    return false
+  endif
+  popup_move(session.winid, {
+    line: geometry.line,
+    col: geometry.col,
+    minwidth: geometry.width,
+    maxwidth: geometry.width,
+    minheight: geometry.height,
+    maxheight: geometry.height,
+  })
+  popup_show(session.winid)
+  return true
+enddef
+
+
+export def RepositionSurfaces()
+  for key in keys(sessions)
+    RepositionSurface(key)
+  endfor
+enddef
+
+
+def ConfigureMinimapWindow(winid: number, bufnr: number, kind: string = 'split')
   win_execute(winid, 'setlocal nowrap nonumber norelativenumber nocursorcolumn nocursorline')
   win_execute(winid, 'setlocal signcolumn=no foldcolumn=0 nofoldenable nolist')
   win_execute(winid, 'setlocal scrolloff=0 sidescrolloff=0')
   win_execute(winid, 'setlocal filetype=simpleminimap')
-  ApplyWindowOptions(winid)
   setbufvar(bufnr, '&modifiable', 0)
   setbufvar(bufnr, '&modified', 0)
+  if kind ==# 'popup'
+    # A popup is never entered, so there is nothing to map into and no
+    # window-local 'statusline' to defend: the popup's own `highlight` option
+    # carries what 'wincolor' carries for a split.
+    return
+  endif
+  win_execute(winid, 'setlocal buftype=nofile bufhidden=wipe noswapfile nobuflisted nomodeline undolevels=-1')
+  ApplyWindowOptions(winid)
 
   win_execute(winid, 'nnoremap <silent> <buffer> q <Cmd>SimpleMinimapClose<CR>')
   win_execute(winid, 'nnoremap <silent> <buffer> <Esc> <Cmd>call simpleminimap#FocusSource()<CR>')
@@ -2071,21 +2200,54 @@ def OpenForCurrentTab()
     return
   endif
 
+  var kind = DisplayMode()
   var minimap_winid = 0
+  var minimap_bufnr = 0
   var opened_key = ''
   internal_change = true
   try
-    if get(g:, 'simpleminimap_side', 'right') ==# 'left'
-      topleft vertical new
+    if kind ==# 'popup'
+      var geometry = PopupGeometry(source_winid)
+      if empty(geometry)
+        throw 'the tracked window has no usable geometry'
+      endif
+      # A popup needs a buffer that is not displayed anywhere else, and
+      # bufhidden=wipe would take it away the moment the popup is hidden on a
+      # tab switch, so this one is owned and wiped by CloseSession() instead.
+      minimap_bufnr = bufadd(printf('simpleminimap://popup/%d', localtime() + source_winid))
+      bufload(minimap_bufnr)
+      setbufvar(minimap_bufnr, '&buftype', 'nofile')
+      setbufvar(minimap_bufnr, '&swapfile', 0)
+      setbufvar(minimap_bufnr, '&buflisted', 0)
+      setbufvar(minimap_bufnr, '&undolevels', -1)
+      minimap_winid = popup_create(minimap_bufnr, {
+        line: geometry.line,
+        col: geometry.col,
+        minwidth: geometry.width,
+        maxwidth: geometry.width,
+        minheight: geometry.height,
+        maxheight: geometry.height,
+        zindex: 50,
+        wrap: false,
+        scrollbar: false,
+        mapping: false,
+        highlight: 'SimpleMinimapNormal',
+      })
     else
-      botright vertical new
+      if get(g:, 'simpleminimap_side', 'right') ==# 'left'
+        topleft vertical new
+      else
+        botright vertical new
+      endif
+      minimap_winid = win_getid()
+      execute 'vertical resize ' .. get(g:, 'simpleminimap_width', 18)
+      minimap_bufnr = bufnr()
     endif
-    minimap_winid = win_getid()
-    execute 'vertical resize ' .. get(g:, 'simpleminimap_width', 18)
-    var minimap_bufnr = bufnr()
     var key = string(minimap_winid)
     opened_key = key
     sessions[key] = {
+      kind: kind,
+      tabnr: tabnr,
       winid: minimap_winid,
       bufnr: minimap_bufnr,
       source_winid: source_winid,
@@ -2116,15 +2278,24 @@ def OpenForCurrentTab()
       render_skips: 0,
       last_render_ms: -1.0,
     }
-    ConfigureMinimapWindow(minimap_winid, minimap_bufnr)
+    ConfigureMinimapWindow(minimap_winid, minimap_bufnr, kind)
     SetBufferLines(minimap_bufnr, ['SimpleMinimap starting…'])
-    win_gotoid(source_winid)
+    if kind !=# 'popup'
+      win_gotoid(source_winid)
+    endif
     Schedule(key, 0)
   catch
     if opened_key !=# '' && has_key(sessions, opened_key)
       DropSession(opened_key)
     endif
-    if WindowExists(minimap_winid) && winnr('$') > 1
+    if kind ==# 'popup'
+      if minimap_winid > 0
+        popup_close(minimap_winid)
+      endif
+      if minimap_bufnr > 0 && bufexists(minimap_bufnr)
+        execute 'bwipeout!' minimap_bufnr
+      endif
+    elseif WindowExists(minimap_winid) && winnr('$') > 1
       win_execute(minimap_winid, 'close!')
     endif
     echohl WarningMsg
@@ -2146,7 +2317,21 @@ enddef
 
 def CloseSession(key: string)
   var session = DropSession(key)
-  if empty(session) || !WindowExists(session.winid)
+  if empty(session)
+    return
+  endif
+  if IsPopupSession(session)
+    # The popup owns its buffer -- nothing else displays it -- so closing the
+    # popup has to take the buffer with it or every toggle leaks one.
+    if WindowExists(session.winid)
+      popup_close(session.winid)
+    endif
+    if bufexists(get(session, 'bufnr', -1))
+      execute 'bwipeout!' session.bufnr
+    endif
+    return
+  endif
+  if !WindowExists(session.winid)
     return
   endif
 
@@ -2255,9 +2440,19 @@ export def Focus()
     OpenForCurrentTab()
     key = CurrentSessionKey()
   endif
-  if key !=# '' && has_key(sessions, key)
-    win_gotoid(sessions[key].winid)
+  if key ==# '' || !has_key(sessions, key)
+    return
   endif
+  if IsPopupSession(sessions[key])
+    # Vim cannot move the cursor into a popup, so say so instead of silently
+    # doing nothing and leaving the user pressing the key again.
+    echohl WarningMsg
+    echom "[SimpleMinimap] a popup minimap cannot be focused; "
+      .. "set g:simpleminimap_display = 'split' for an enterable window."
+    echohl None
+    return
+  endif
+  win_gotoid(sessions[key].winid)
 enddef
 
 
@@ -2388,7 +2583,11 @@ export def Resize(value: string)
   PruneSessions()
   for key in keys(sessions)
     if has_key(sessions, key) && WindowExists(sessions[key].winid)
-      win_execute(sessions[key].winid, 'vertical resize ' .. width)
+      if IsPopupSession(sessions[key])
+        RepositionSurface(key)
+      else
+        win_execute(sessions[key].winid, 'vertical resize ' .. width)
+      endif
       Schedule(key, 0)
     endif
   endfor
@@ -2508,9 +2707,22 @@ def MoveSourceToRow(key: string, row_number: number, focus_source: bool): bool
 enddef
 
 
-export def Jump()
+# Jump() and Preview() read line('.') because they are bound inside the minimap
+# buffer.  A popup minimap has no such binding and is never the current window,
+# so line('.') would be a *source* line: refuse rather than jump somewhere the
+# user did not point at.
+def CurrentEnterableSessionKey(): string
   var key = CurrentSessionKey()
-  if key ==# '' || !has_key(sessions, key)
+  if key ==# '' || !has_key(sessions, key) || IsPopupSession(sessions[key])
+    return ''
+  endif
+  return key
+enddef
+
+
+export def Jump()
+  var key = CurrentEnterableSessionKey()
+  if key ==# ''
     return
   endif
   var session = sessions[key]
@@ -2522,7 +2734,7 @@ enddef
 
 
 export def Preview()
-  var key = CurrentSessionKey()
+  var key = CurrentEnterableSessionKey()
   if key !=# ''
     MoveSourceToRow(key, line('.'), false)
   endif
@@ -2758,8 +2970,8 @@ export def OnContextChanged()
   endif
   if !IsEligibleSourceWindow(current_winid)
     if current_winid == session.source_winid || !IsEligibleSourceWindow(session.source_winid)
-      var tab_info = WindowInfo(session.winid)
-      var replacement = empty(tab_info) ? 0 : FindSourceWindow(tab_info.tabnr)
+      var session_tab = SessionTab(session)
+      var replacement = session_tab <= 0 ? 0 : FindSourceWindow(session_tab)
       if replacement > 0
         session.source_winid = replacement
         session.source_bufnr = WindowInfo(replacement).bufnr
@@ -2844,6 +3056,7 @@ enddef
 export def OnWinScrolled(winid: number)
   for [key, session] in items(sessions)
     if get(session, 'source_winid', 0) == winid
+      RepositionSurface(key)
       UpdateViewport(key)
     elseif get(session, 'winid', 0) == winid
       Schedule(key)
@@ -2854,6 +3067,7 @@ enddef
 
 export def OnResized()
   for key in keys(sessions)
+    RepositionSurface(key)
     Schedule(key)
   endfor
 enddef
@@ -2873,8 +3087,8 @@ export def OnWinClosed(winid: number)
     if get(session, 'source_winid', 0) == winid
       session.pinned = false
       redrawstatus
-      var tab_info = WindowInfo(session.winid)
-      var replacement = empty(tab_info) ? 0 : FindSourceWindow(tab_info.tabnr)
+      var session_tab = SessionTab(session)
+      var replacement = session_tab <= 0 ? 0 : FindSourceWindow(session_tab)
       if replacement > 0
         session.source_winid = replacement
         session.source_bufnr = WindowInfo(replacement).bufnr
@@ -2942,8 +3156,8 @@ export def OnBufferWipeout(bufnr: number)
       endif
       session.pinned = false
       redrawstatus
-      var tab_info = WindowInfo(session.winid)
-      var replacement = empty(tab_info) ? 0 : FindSourceWindow(tab_info.tabnr)
+      var session_tab = SessionTab(session)
+      var replacement = session_tab <= 0 ? 0 : FindSourceWindow(session_tab)
       if replacement > 0
         session.source_winid = replacement
         session.source_bufnr = WindowInfo(replacement).bufnr
@@ -2970,6 +3184,7 @@ const KNOWN_OPTIONS = [
   'simpleminimap_daemon_path',
   'simpleminimap_debounce',
   'simpleminimap_debug',
+  'simpleminimap_display',
   'simpleminimap_drag_thumb',
   'simpleminimap_fill',
   'simpleminimap_ignore_filetypes',
@@ -3077,6 +3292,11 @@ export def Health()
             backend_breaker_reason)
         : printf('armed, %d/%d restarts used in the current window',
             backend_restart_attempts, MAX_BACKEND_RESTARTS)),
+    printf('[%s] display: %s', DisplayMode() ==# get(g:, 'simpleminimap_display', 'split')
+      ? 'OK' : 'WARN',
+      DisplayMode() ==# get(g:, 'simpleminimap_display', 'split')
+        ? DisplayMode()
+        : printf("popup requested but this Vim has no +popupwin; using 'split'")),
     printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
   ]
   # Braille and block glyphs simply cannot be encoded in a single-byte
