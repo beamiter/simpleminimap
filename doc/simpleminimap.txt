@@ -219,7 +219,23 @@ All options must be set before the plugin is loaded.
 
 *g:simpleminimap_auto_restart*
         Boolean number, default 1.  Retry an unexpectedly exited backend up to
-        three times.  A successful render resets the retry counter.
+        three times per rolling 60-second window, with 100/350/1000ms backoff.
+        Spending that budget trips the crash-loop breaker: the failure is
+        reported once and nothing is respawned again -- not on a timer and not
+        on the next render -- until |:SimpleMinimapRestart| re-arms it.  The
+        budget is deliberately *not* reset by a successful render, because a
+        daemon that crashes after every render makes progress every time and
+        would otherwise be respawned for ever.
+
+*g:simpleminimap_request_timeout_ms*
+        Number, default 5000, clamped to 100..600000.  How long to wait for a
+        render reply before giving up on it.  A daemon that accepts input and
+        stops answering -- wedged, stopped, blocked on a slow filesystem -- is
+        still a live process with a healthy |job_status()|, so without a
+        deadline the minimap keeps showing pre-edit content indefinitely.  On
+        expiry the request is dropped and the minimap says so; two consecutive
+        expiries restart the daemon.  Set to 0 to disable the deadline, which
+        |:SimpleMinimapHealth| then reports as a warning.
 
 *g:simpleminimap_mouse_scroll_lines*
         Number, clamped to 1..50.  Source lines scrolled per mouse wheel event
@@ -342,11 +358,12 @@ Backend stopped or protocol mismatch
 ==============================================================================
 DAEMON SUPERVISION                                    *simpleminimap-daemon*
 
-The Rust daemon is managed by simplecore, the supervisor shared by the whole
-simple* plugin suite. It is vendored into this repository at
-autoload/simpleminimap/core.vim; that file is generated, do not edit it in place.
+The Rust daemon is supervised by this plugin directly, in
+autoload/simpleminimap.vim.  The suite's shared supervisor is vendored
+alongside it at autoload/simpleminimap/core.vim and is not what runs here; see
+|simpleminimap-simplecore|.
 
-What it guarantees:
+What the supervision guarantees:
 
 - Liveness is always read from |job_status()|. job_start() returns a job
   object even when the exec itself failed, so a daemon that cannot start is
@@ -355,16 +372,21 @@ What it guarantees:
   replacement that already took its place.
 - Output still queued when you stop the daemon is discarded, so an explicit
   stop cannot be undone by an event that was already in flight.
-- A daemon that dies is restarted automatically with exponential backoff.
-  If it keeps crashing, the supervisor reports it once and stops trying
-  rather than respawning forever; :SimpleMinimapRestart re-arms it.
-- Requests are correlated to replies by id and can time out, so a wedged
-  daemon never leaves a callback hanging.
+- A daemon that dies is restarted automatically with 100/350/1000ms backoff,
+  at most three times per rolling 60-second window.  Spending that budget
+  trips the crash-loop breaker: the failure is reported once and no further
+  process is started, by any path, until |:SimpleMinimapRestart| re-arms it.
+  See |g:simpleminimap_auto_restart|.
+- Requests are correlated to replies by id and time out, so a daemon that
+  accepts input and stops answering cannot leave the minimap stale behind a
+  healthy-looking process.  See |g:simpleminimap_request_timeout_ms|.
 
 :SimpleMinimapHealth
-        Report daemon path, run state, negotiated protocol and capabilities,
-        uptime, crash and restart counts, and whether the crash-loop breaker
-        has tripped, alongside this plugin's own diagnostics.
+        Report daemon path and version, run state, protocol version, measured
+        round-trip latency, the request deadline and how many requests have
+        expired, the restart budget and whether the crash-loop breaker has
+        tripped, plus per-session render statistics and the last backend
+        error.
 
 :SimpleMinimapRestart
         Stop the daemon and start a fresh one. Clears the crash-loop breaker,
@@ -379,8 +401,13 @@ What it guarantees:
 ==============================================================================
 DAEMON COMMAND LINE                                 *simpleminimap-daemon-cli*
 
-The daemon takes no arguments in normal use: the plugin starts it and speaks
-JSON over its stdin and stdout.  For diagnosis it also answers: >
+The daemon takes no arguments in normal use: the plugin starts it and speaks a
+line-oriented, TAB-separated protocol over its stdin and stdout.  The daemon
+announces "READY <protocol>", answers "P <id>" with "PONG <id> <protocol>", and
+answers a render request (a "B" header, one "G" record per row band, then "E")
+with a "B" header, one "R" record per rendered row, and "E"; a request it
+cannot serve is answered with "X <id> <reason>".  For diagnosis it also
+answers: >
 
   simpleminimap-daemon --version
   simpleminimap-daemon --help
@@ -394,9 +421,9 @@ Every daemon in the simple* suite answers these three the same way.
 
 VENDORED SUPERVISOR                                 *simpleminimap-simplecore*
 
-The daemon supervisor in autoload/simpleminimap/core.vim, and the test harness
-beside it, are vendored from the suite's shared .simplecore bundle rather
-than written here — each plugin carries its own copy so that installing
+The suite's shared daemon supervisor in autoload/simpleminimap/core.vim, and
+the test harness beside it, are vendored from the shared .simplecore bundle
+rather than written here — each plugin carries its own copy so that installing
 this plugin alone is enough.  Do not edit those files in place: >
 
   make core-verify

@@ -56,7 +56,13 @@ let state = simpleminimap#DebugStatus()
 call assert_equal(1, len(state.sessions))
 call assert_true(state.backend_running)
 call assert_equal(simplify(fnamemodify(s:configured_daemon, ':p')), state.backend_path)
-call assert_equal(0, state.backend_restart_attempts)
+" The mock daemon crashes exactly once on its first start; the Rust daemon
+" ignores the marker.  A restart spent on that crash stays spent: the budget is
+" a rolling window, deliberately not refunded by the render that follows.
+let s:expected_restarts = s:configured_daemon =~# 'mock_daemon\.py$' ? 1 : 0
+call assert_equal(s:expected_restarts, state.backend_restart_attempts,
+      \ 'a successful render does not refund the restart budget')
+call assert_false(state.backend_breaker_tripped)
 let session = values(state.sessions)[0]
 call assert_true(len(session.rows) > 0)
 call assert_equal(1, session.rows[0].start)

@@ -21,6 +21,21 @@ All notable changes to SimpleMinimap are documented here.
 - `g:simpleminimap_mouse_scroll_lines` 未显式设置时改为跟随 `'mousescroll'` 的
   `ver:`,滚轮在 minimap 上和在代码上的手感一致。
 
+- 渲染请求此前没有任何超时。daemon 只要还接受输入却不再回复(卡死、被 SIGSTOP、
+  阻塞在慢文件系统上),`job_status()` 依然是 `run`、握手也早已成功,于是 minimap
+  永远停在编辑前的内容上,而 `:SimpleMinimapHealth` 一路绿灯——只能靠
+  `:SimpleMinimapRestart` 恢复。现在每个请求都会 arm 一个 deadline
+  (`g:simpleminimap_request_timeout_ms`,默认 5000ms,设 0 关闭),超时即拒绝该请求
+  并在 minimap 上说明;连续两次超时会重启 daemon。
+- 崩溃循环熔断此前形同虚设:`backend_restart_attempts` 在每次成功渲染后被清零,
+  于是“最多重启 3 次”变成了“每成功一次就重新计 3 次”。每渲染一次就崩一次的
+  daemon 会被每 100ms 重新 fork 一遍,直到会话结束(实测 8 秒内 57 次)。改为
+  60 秒滚动窗口内的固定预算;用尽后熔断,并且熔断后 *任何* 路径都不再启动进程
+  (此前渲染路径会绕过定时器直接再 fork 一个),`:SimpleMinimapRestart` 才能复位。
+- `:SimpleMinimapHealth` 现在报告请求超时设置与累计超时次数、重启预算用量与熔断
+  状态。help 里关于 daemon 监管的那一节此前描述的是 simplecore + JSON over stdio,
+  而实际跑的是本仓库自己的 supervisor + TAB 分隔行协议;已按实际实现重写。
+
 - 搜索投影不再把整个 buffer 交给 `matchbufline()`。它按 *每个匹配* 返回一个
   字典,而这里最终只需要“每一行区间里有没有命中”这 `len(rows)` 个比特:在
   5 万行、模式为 `.` 的 buffer 上,旧实现在 `CursorMoved` 回调里同步分配约 200 万

@@ -76,6 +76,11 @@ g:simpleminimap_shading = Flag(get(g:, 'simpleminimap_shading', 1), 1)
 g:simpleminimap_auto_close = Flag(get(g:, 'simpleminimap_auto_close', 0), 0)
 g:simpleminimap_auto_open = Flag(get(g:, 'simpleminimap_auto_open', 0), 0)
 g:simpleminimap_auto_restart = Flag(get(g:, 'simpleminimap_auto_restart', 1), 1)
+# 0 disables the deadline entirely; anything else is clamped to a sane range.
+g:simpleminimap_request_timeout_ms = type(get(g:, 'simpleminimap_request_timeout_ms', 5000)) == v:t_number
+  && get(g:, 'simpleminimap_request_timeout_ms', 5000) <= 0
+  ? 0
+  : ClampNumber(get(g:, 'simpleminimap_request_timeout_ms', 5000), 5000, 100, 600000)
 var configured_ignored_filetypes = get(g:, 'simpleminimap_ignore_filetypes', [])
 g:simpleminimap_ignore_filetypes = type(configured_ignored_filetypes) == v:t_list ? configured_ignored_filetypes : []
 

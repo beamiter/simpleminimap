@@ -25,10 +25,21 @@ if crash_once:
         os.close(descriptor)
         sys.exit(23)
 
+# Serve one render, then die -- every time.  This is the crash loop a restart
+# budget reset by "the last render succeeded" can never break out of, because
+# progress is exactly what it keeps making.
+crash_after_render = os.environ.get('SIMPLEMINIMAP_TEST_CRASH_AFTER_RENDER', '') != ''
+
+# Accept input and answer nothing: the wedged daemon that request timeouts
+# exist for.  READY was already sent, so the plugin considers the backend
+# healthy and job_status() keeps reporting "run" -- exactly the state that used
+# to leave a minimap stale for ever behind a green :SimpleMinimapHealth.
+wedged = os.environ.get('SIMPLEMINIMAP_TEST_WEDGE', '') != ''
+
 pending = None
 for raw in sys.stdin:
     line = raw.rstrip('\n')
-    if not line:
+    if not line or wedged:
         continue
     fields = line.split('\t')
     command = fields[0]
@@ -56,6 +67,8 @@ for raw in sys.stdin:
             shade = '2' * pending['width']
             emit(f'R\t{request_id}\t{start}\t{end}\t{encode(text)}\t{shade}')
         emit(f'E\t{request_id}')
+        if crash_after_render:
+            sys.exit(23)
         pending = None
     elif command == 'P':
         emit(f'PONG\t{fields[1]}\t{PROTOCOL}')

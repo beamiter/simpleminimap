@@ -3,6 +3,7 @@ vim9script
 const PROTOCOL_VERSION = 2
 const MIN_RENDER_HEIGHT = 1
 const MAX_BACKEND_RESTARTS = 3
+const RESTART_WINDOW_MS = 60000.0
 # Search projection reads the source buffer through matchbufline() one bounded
 # sub-chunk at a time and abandons a row band at its first hit, so a dense
 # pattern costs a few hundred lines per row rather than the whole buffer.
@@ -47,6 +48,13 @@ var backend_ready = false
 var backend_error = ''
 var backend_restart_timer = 0
 var backend_restart_attempts = 0
+# Restarts are budgeted over a sliding window rather than counted since the
+# last success: a daemon that crashes after every render would otherwise reset
+# the budget on each success and be respawned every ~100ms for ever.
+var backend_restart_window: any = reltime()
+var backend_breaker_tripped = false
+var backend_timeouts = 0
+var consecutive_timeouts = 0
 var backend_stopping = false
 var backend_restart_requested = false
 var next_request_id = 0
@@ -132,7 +140,25 @@ def FindSourceWindow(tabnr: number, preferred: number = 0): number
 enddef
 
 
+def StopRequestTimer(session: dict<any>)
+  if get(session, 'request_timer', 0) > 0
+    timer_stop(session.request_timer)
+  endif
+  session.request_timer = 0
+enddef
+
+
+def StopAllRequestTimers()
+  for session in values(sessions)
+    StopRequestTimer(session)
+  endfor
+enddef
+
+
 def ForgetRequestsForSession(key: string)
+  if has_key(sessions, key)
+    StopRequestTimer(sessions[key])
+  endif
   for request_key in keys(requests)
     if requests[request_key] ==# key
       requests->remove(request_key)
@@ -152,6 +178,7 @@ def DropSession(key: string): dict<any>
   if get(session, 'timer', 0) > 0
     timer_stop(session.timer)
   endif
+  StopRequestTimer(session)
   ClearMatches(key)
   sessions->remove(key)
   ForgetRequestsForSession(key)
@@ -253,6 +280,7 @@ def RejectResponse(request_key: string, message: string)
   endif
   if key !=# '' && has_key(sessions, key)
     var session = sessions[key]
+    StopRequestTimer(session)
     if string(get(session, 'request_id', 0)) ==# request_key
       RenderMessage(key, ['SimpleMinimap backend error', message])
     endif
@@ -454,14 +482,25 @@ def BackendExit(exited_job: job, status: number)
   ping_started = []
   requests = {}
   incoming = {}
+  StopAllRequestTimers()
   backend_stopping = false
   backend_restart_requested = false
   Log(backend_error)
   var should_restart = explicitly_requested
   if unexpected && get(g:, 'simpleminimap_auto_restart', 1)
-      && backend_restart_attempts < MAX_BACKEND_RESTARTS
-    backend_restart_attempts += 1
-    should_restart = true
+    if reltimefloat(reltime(backend_restart_window)) * 1000.0 > RESTART_WINDOW_MS
+      backend_restart_attempts = 0
+      backend_restart_window = reltime()
+    endif
+    if backend_restart_attempts < MAX_BACKEND_RESTARTS
+      backend_restart_attempts += 1
+      should_restart = true
+    else
+      # Report it once and stop, rather than forking a process every 100ms for
+      # the rest of the session.  :SimpleMinimapRestart re-arms the breaker.
+      backend_breaker_tripped = true
+      Log(printf('crash-loop breaker tripped after %d restarts', backend_restart_attempts))
+    endif
   endif
   if should_restart && !empty(sessions)
     var delays = [100, 350, 1000]
@@ -472,7 +511,9 @@ def BackendExit(exited_job: job, status: number)
     ScheduleBackendRestart(explicitly_requested ? 0 : delays[delay_index])
   else
     for key in keys(sessions)
-      RenderMessage(key, ['SimpleMinimap backend stopped', backend_error])
+      RenderMessage(key, backend_breaker_tripped
+        ? ['SimpleMinimap backend stopped', 'crash loop', ':SimpleMinimapRestart']
+        : ['SimpleMinimap backend stopped', backend_error])
     endfor
   endif
 enddef
@@ -484,6 +525,13 @@ def StartBackend(): bool
   endif
   if backend_stopping
     backend_error = 'backend is restarting'
+    return false
+  endif
+  # Every render path reaches this function, so the breaker has to hold here
+  # too -- otherwise "stop trying" would only mean "stop trying on a timer" and
+  # the next keystroke would fork the doomed process all over again.
+  if backend_breaker_tripped
+    backend_error = 'backend crash loop; run :SimpleMinimapRestart'
     return false
   endif
 
@@ -537,6 +585,7 @@ def StopBackend(restart: bool = false)
   backend_ready = false
   requests = {}
   incoming = {}
+  StopAllRequestTimers()
   if BackendRunning()
     try
       job_stop(backend_job)
@@ -855,7 +904,51 @@ def RenderSession(key: string)
     endif
     backend_error = 'failed to send render request: ' .. v:exception
     RenderMessage(key, ['SimpleMinimap', backend_error])
+    return
   endtry
+
+  # A daemon that accepts input but stops replying -- wedged, SIGSTOPped, stuck
+  # on a slow filesystem -- used to leave the minimap showing pre-edit content
+  # forever while job_status() still said "run" and Health still said [OK].
+  # Nothing else in the pipeline has a deadline, so arm one here.
+  var timeout = RequestTimeoutMs()
+  if timeout > 0
+    session.request_timer = timer_start(timeout,
+      function(ExpireRequest, [key, request_id]))
+  endif
+enddef
+
+
+def RequestTimeoutMs(): number
+  var configured = get(g:, 'simpleminimap_request_timeout_ms', 5000)
+  if type(configured) != v:t_number || configured <= 0
+    return 0
+  endif
+  return Clamp(configured, 100, 600000)
+enddef
+
+
+def ExpireRequest(key: string, request_id: number, _timer: number)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  session.request_timer = 0
+  if get(session, 'request_id', 0) != request_id
+    return
+  endif
+  backend_timeouts += 1
+  consecutive_timeouts += 1
+  var message = printf('backend did not respond in %dms', RequestTimeoutMs())
+  Log(printf('request %d timed out (%d consecutive)', request_id, consecutive_timeouts))
+  RejectResponse(string(request_id), message)
+  # One timeout can be a slow machine under load; two in a row means the daemon
+  # is not coming back, and only a fresh process recovers from that.
+  if consecutive_timeouts >= 2
+    consecutive_timeouts = 0
+    Log('restarting a wedged backend after repeated request timeouts')
+    Restart()
+  endif
 enddef
 
 
@@ -1298,7 +1391,12 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
   if type(started) == v:t_list && !empty(started)
     session.last_render_ms = reltimefloat(reltime(started)) * 1000.0
   endif
-  backend_restart_attempts = 0
+  # Deliberately does NOT reset backend_restart_attempts: that turned the
+  # three-restart cap into a per-success cap, so a daemon crashing after every
+  # render was respawned without limit.  The restart budget is a sliding
+  # window in BackendExit(); only an explicit :SimpleMinimapRestart clears it.
+  StopRequestTimer(session)
+  consecutive_timeouts = 0
   backend_error = ''
   SetBufferLines(session.bufnr, output)
   ApplyShading(key, output)
@@ -1428,6 +1526,7 @@ def OpenForCurrentTab()
       preview_origin: [],
       drag_anchor: {},
       last_scroll: [],
+      request_timer: 0,
       request_started: [],
       request_signature: '',
       last_signature: '',
@@ -1727,7 +1826,12 @@ enddef
 
 
 export def Restart()
+  # The documented way back after repeated failures: clear the crash-loop
+  # breaker and the timeout streak along with the restart budget.
   backend_restart_attempts = 0
+  backend_restart_window = reltime()
+  backend_breaker_tripped = false
+  consecutive_timeouts = 0
   for key in keys(sessions)
     RenderMessage(key, ['SimpleMinimap', 'restarting backend…'])
   endfor
@@ -2278,6 +2382,16 @@ export def Health()
     printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
     printf('[%s] density shading: %s', ShadingEnabled() ? 'OK' : 'INFO', ShadingEnabled() ? 'enabled' : (has('textprop') == 1 ? 'disabled by g:simpleminimap_shading' : 'needs +textprop')),
     printf('[INFO] sessions: %d, pending requests: %d', len(sessions), len(requests)),
+    printf('[%s] request timeout: %s', RequestTimeoutMs() > 0 ? 'OK' : 'WARN',
+      RequestTimeoutMs() > 0
+        ? printf('%dms, %d expired so far', RequestTimeoutMs(), backend_timeouts)
+        : 'disabled by g:simpleminimap_request_timeout_ms; a wedged daemon will not be noticed'),
+    printf('[%s] crash-loop breaker: %s', backend_breaker_tripped ? 'FAIL' : 'OK',
+      backend_breaker_tripped
+        ? printf('tripped after %d restarts in %ds; run :SimpleMinimapRestart',
+            backend_restart_attempts, float2nr(RESTART_WINDOW_MS / 1000.0))
+        : printf('armed, %d/%d restarts used in the current window',
+            backend_restart_attempts, MAX_BACKEND_RESTARTS)),
     printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
   ]
   for [key, session] in items(sessions)
@@ -2303,6 +2417,8 @@ export def DebugStatus(): dict<any>
     backend_ready: backend_ready,
     backend_error: backend_error,
     backend_restart_attempts: backend_restart_attempts,
+    backend_breaker_tripped: backend_breaker_tripped,
+    backend_timeouts: backend_timeouts,
     backend_latency_ms: backend_latency_ms,
     pending_requests: deepcopy(requests),
   }
@@ -2315,10 +2431,15 @@ export def Stop()
     if get(session, 'timer', 0) > 0
       timer_stop(session.timer)
     endif
+    StopRequestTimer(session)
   endfor
   StopBackend(false)
   sessions = {}
   requests = {}
   incoming = {}
   backend_restart_attempts = 0
+  backend_restart_window = reltime()
+  backend_breaker_tripped = false
+  backend_timeouts = 0
+  consecutive_timeouts = 0
 enddef
