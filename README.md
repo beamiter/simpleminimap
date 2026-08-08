@@ -177,7 +177,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_daemon_path` | `''` | 后台可执行文件绝对路径；空值时自动查找 |
 | `g:simpleminimap_show_statusline` | `1` | 是否显示 minimap 状态栏标题 |
 | `g:simpleminimap_show_signs` | `1` | 是否把源缓冲区中的 Vim signs 聚合显示到 minimap |
-| `g:simpleminimap_show_search` | `1` | 是否把 `hlsearch` 匹配投影到 minimap（需要 `matchbufline()`） |
+| `g:simpleminimap_show_search` | `1` | 是否把 `hlsearch` 匹配投影到 minimap（需要 `matchbufline()`）；按行区间扫描并在首个命中处停止，不再跳过大文件 |
 | `g:simpleminimap_shading` | `1` | 是否按密度给 minimap 单元格分档着色（需要 `+textprop`） |
 | `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |

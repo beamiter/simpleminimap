@@ -189,8 +189,14 @@ All options must be set before the plugin is loaded.
 *g:simpleminimap_show_search*
         Boolean number, default 1.  Project the active 'hlsearch' matches of
         the last search pattern onto minimap rows.  Requires |matchbufline()|
-        (Vim 9.1.0009 or newer); silently disabled otherwise.  Buffers above
-        100000 lines are skipped.
+        (Vim 9.1.0009 or newer); silently disabled otherwise.
+
+        A minimap row is marked when any line in its range matches, so the
+        projection reads each row's range only until its first hit and stops
+        there; buffer size is no longer a reason to skip it.  A pattern that
+        matches nowhere in a buffer of several million lines exhausts the scan
+        budget instead: the rows decided so far are shown and the statusline
+        gains a "~" marker to say the overview is incomplete.
 
 *g:simpleminimap_shading*
         Boolean number, default 1.  Shade every rendered minimap cell by its

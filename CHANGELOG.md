@@ -21,6 +21,17 @@ All notable changes to SimpleMinimap are documented here.
 - `g:simpleminimap_mouse_scroll_lines` 未显式设置时改为跟随 `'mousescroll'` 的
   `ver:`,滚轮在 minimap 上和在代码上的手感一致。
 
+- 搜索投影不再把整个 buffer 交给 `matchbufline()`。它按 *每个匹配* 返回一个
+  字典,而这里最终只需要“每一行区间里有没有命中”这 `len(rows)` 个比特:在
+  5 万行、模式为 `.` 的 buffer 上,旧实现在 `CursorMoved` 回调里同步分配约 200 万
+  个字典并做 4400 万次行号比较(实测 3.6 秒,每次按键一遍)。现在按行区间分段扫描
+  并在首个命中处离开该区间,同样的场景降到几十毫秒,并且不再需要“超过 10 万行
+  就跳过搜索投影”这条限制——大文件的搜索投影现在是可用的。扫描预算耗尽时(比如
+  几百万行且模式无命中)标记为部分结果,状态栏显示 `~`。
+- `RowForSourceLine()` 由线性扫描改为除法(带校验,必要时二分回退)。这个函数在
+  每个 sign 上都要调用一次,带 4000 个 git sign 的文件每次 `CursorHold` 要做
+  约 24 万次比较。`UpdateSigns()` 同时在所有行都升到最高严重级时提前退出。
+
 ### 新增
 
 - 视口拖拽:按住左键从视口高亮带内起手,拖动的是视口本身——minimap 直接当滚动条
