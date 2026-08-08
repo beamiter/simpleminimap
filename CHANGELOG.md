@@ -47,6 +47,19 @@ All notable changes to SimpleMinimap are documented here.
   每个 sign 上都要调用一次,带 4000 个 git sign 的文件每次 `CursorHold` 要做
   约 24 万次比较。`UpdateSigns()` 同时在所有行都升到最高严重级时提前退出。
 
+- `:SimpleMinimapHealth` 此前用 `systemlist()` 同步执行 `daemon --version`。也就是
+  说,daemon 卡在慢文件系统上时,你用来诊断卡顿的那条命令自己会先把 Vim 冻住。改成
+  用 job 探测并缓存,Health 在结果到达前显示 `probing…`。
+- daemon 协议不匹配此前只报 “backend protocol version mismatch”,在 18 列宽的窗口
+  里等于什么都没说。这几乎总是“更新了插件但没重新构建 `lib/`”,现在直接给出修法:
+  minimap 上显示 `daemon is / out of date / run install.sh`,Health 显示
+  `[FAIL] daemon protocol: daemon vN, plugin expects vM — run ./install.sh`。
+- Health 新增配置检查:`'encoding'` 不是 utf-8 却在用 braille/blocks 时给出告警;
+  以及拼错的选项名——`g:simpleminimap_*` 里插件不认识的名字会被列出并给出最接近的
+  候选(`g:simpleminimap_widht` → `g:simpleminimap_width`)。此前拼错的选项会被永远
+  静默忽略。已知选项表由 `tests/vim_health.vim` 与 `plugin/simpleminimap.vim` 实际
+  归一化的名字比对,不会漂移。
+
 ### 构建与 CI 修复
 
 - CI 的 msrv 作业固定在 `dtolnay/rust-toolchain@1.85.0`,而 `Cargo.toml` 声明的是

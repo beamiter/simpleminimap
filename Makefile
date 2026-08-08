@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-timeout test-vim-health test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -50,6 +50,11 @@ test-vim-projection:
 # start, so it needs its own Vim instance.
 test-vim-timeout:
 	vim -Nu NONE -n -es -S tests/vim_timeout.vim
+
+# Runs against a daemon announcing an older protocol, selected by an
+# environment variable read at daemon start.
+test-vim-health:
+	vim -Nu NONE -n -es -S tests/vim_health.vim
 
 test-vim-real: build
 	SIMPLEMINIMAP_TEST_DAEMON="$(CURDIR)/target/release/simpleminimap-daemon" \

@@ -119,7 +119,7 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimapStyle     " 循环 braille → blocks → ascii
 :SimpleMinimapStyle ascii
 :SimpleMinimapRestart   " 重启后台并保留当前 session
-:SimpleMinimapHealth    " 环境和后台状态（含 daemon 版本、往返延迟、渲染统计）
+:SimpleMinimapHealth    " 环境与后台诊断（daemon 版本/协议、往返延迟、请求超时与熔断、配置拼写检查）
 :SimpleMinimapDebug     " 完整内部状态字典
 ```
 

@@ -85,9 +85,21 @@ Both values must be 1.
 
 :SimpleMinimapHealth                                *:SimpleMinimapHealth*
         Show categorized Vim, daemon, protocol, session and configuration
-        checks, including the daemon version, the measured backend round-trip
-        latency, search projection support, per-session render statistics and
-        the last backend error when present.
+        checks: the daemon path and version, the negotiated protocol against
+        the one this plugin expects, the measured backend round-trip latency,
+        the request deadline and how many requests have expired, the restart
+        budget and crash-loop breaker state, search projection support,
+        per-session render statistics and the last backend error.
+
+        It never blocks: the daemon version is probed with a job and reported
+        as "probing…" until it arrives, so running this command against a
+        wedged daemon cannot itself hang.
+
+        It also reports configuration problems: a 'encoding' that cannot
+        represent the configured render style, and any g:simpleminimap_*
+        variable that is not an option this plugin reads -- a misspelled option
+        name is otherwise ignored in silence for ever.  |simpleminimap#UnknownOptions()|
+        returns that list on its own.
 
 :SimpleMinimapDebug                                 *:SimpleMinimapDebug*
         Echo the complete internal state dictionary.
@@ -352,6 +364,19 @@ Inspect state
 Backend stopped or protocol mismatch
         Run |:SimpleMinimapHealth|, then |:SimpleMinimapRestart| after fixing
         the reported daemon path or rebuilding it with install.sh/install.ps1.
+
+"daemon is out of date"
+        The plugin files were updated without rebuilding the daemon, so the
+        two no longer agree on the protocol.  Health reports it as
+        "[FAIL] daemon protocol: daemon vN, plugin expects vM".  Run
+        install.sh (or install.ps1), then |:SimpleMinimapRestart|.
+
+The minimap froze but the daemon looks fine
+        A daemon that accepts input and stops answering is a live process.
+        Health reports the expired-request count next to the deadline; see
+        |g:simpleminimap_request_timeout_ms|.  Repeated crashes trip the
+        crash-loop breaker, which Health reports as tripped and
+        |:SimpleMinimapRestart| clears.
 
 ==============================================================================
 

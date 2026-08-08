@@ -55,6 +55,14 @@ var backend_restart_window: any = reltime()
 var backend_breaker_tripped = false
 var backend_timeouts = 0
 var consecutive_timeouts = 0
+var backend_protocol = 0
+# `daemon --version` is probed with a job, never system(): a daemon hung on a
+# slow or unresponsive filesystem would otherwise freeze Vim inside the very
+# command you run to diagnose a hang.  Keyed by path so a rebuilt or
+# reconfigured daemon is re-probed.
+var daemon_version_probed = ''
+var daemon_version = ''
+var daemon_version_job: any = v:null
 var backend_stopping = false
 var backend_restart_requested = false
 var next_request_id = 0
@@ -299,11 +307,17 @@ def BackendOut(_channel: channel, message: string)
   endif
 
   if fields[0] ==# 'READY'
-    backend_ready = len(fields) == 2 && str2nr(fields[1]) == PROTOCOL_VERSION
+    backend_protocol = len(fields) == 2 ? str2nr(fields[1]) : 0
+    backend_ready = len(fields) == 2 && backend_protocol == PROTOCOL_VERSION
     if !backend_ready
-      backend_error = 'backend protocol version mismatch'
+      # By far the most common cause is a plugin update that did not rebuild
+      # lib/, so name the fix instead of only naming the symptom: "protocol
+      # version mismatch" in an 18-column window tells nobody what to do.
+      backend_error = printf(
+        'daemon speaks protocol v%d, this plugin expects v%d; run ./install.sh, then :SimpleMinimapRestart',
+        backend_protocol, PROTOCOL_VERSION)
       for key in keys(sessions)
-        RenderMessage(key, ['SimpleMinimap backend error', backend_error])
+        RenderMessage(key, ['SimpleMinimap', 'daemon is', 'out of date', 'run install.sh'])
       endfor
     else
       backend_error = ''
@@ -519,6 +533,38 @@ def BackendExit(exited_job: job, status: number)
 enddef
 
 
+def DaemonVersionOut(_channel: channel, message: string)
+  if daemon_version ==# '' && message !=# ''
+    daemon_version = message
+  endif
+enddef
+
+
+def DaemonVersionExit(_job: job, _status: number)
+  daemon_version_job = v:null
+enddef
+
+
+def ProbeDaemonVersion(path: string)
+  if path ==# '' || daemon_version_probed ==# path
+    return
+  endif
+  daemon_version_probed = path
+  daemon_version = ''
+  try
+    daemon_version_job = job_start([path, '--version'], {
+      in_io: 'null',
+      out_mode: 'nl',
+      out_cb: DaemonVersionOut,
+      exit_cb: DaemonVersionExit,
+      stoponexit: 'kill',
+    })
+  catch
+    daemon_version_job = v:null
+  endtry
+enddef
+
+
 def StartBackend(): bool
   if BackendRunning()
     return true
@@ -571,6 +617,7 @@ def StartBackend(): bool
     return false
   endif
   Log('started backend: ' .. backend_path)
+  ProbeDaemonVersion(backend_path)
   return true
 enddef
 
@@ -2359,25 +2406,99 @@ export def OnBufferWipeout(bufnr: number)
 enddef
 
 
+# Every g: option the plugin reads.  A misspelled option name is otherwise
+# silently ignored for ever, which is the single most confusing way for a
+# config to be wrong.  tests/vim_health.vim asserts this list matches the names
+# plugin/simpleminimap.vim actually normalises, so it cannot drift.
+const KNOWN_OPTIONS = [
+  'simpleminimap_auto_close',
+  'simpleminimap_auto_open',
+  'simpleminimap_auto_restart',
+  'simpleminimap_daemon_path',
+  'simpleminimap_debounce',
+  'simpleminimap_debug',
+  'simpleminimap_drag_thumb',
+  'simpleminimap_ignore_filetypes',
+  'simpleminimap_max_columns',
+  'simpleminimap_mouse_scroll_lines',
+  'simpleminimap_render_style',
+  'simpleminimap_request_timeout_ms',
+  'simpleminimap_sampling',
+  'simpleminimap_set_default_mapping',
+  'simpleminimap_shading',
+  'simpleminimap_show_search',
+  'simpleminimap_show_signs',
+  'simpleminimap_show_statusline',
+  'simpleminimap_side',
+  'simpleminimap_width',
+]
+
+
+export def KnownOptions(): list<string>
+  return copy(KNOWN_OPTIONS)
+enddef
+
+
+export def UnknownOptions(): list<string>
+  var unknown: list<string> = []
+  for name in keys(g:)
+    if name =~# '^simpleminimap_' && index(KNOWN_OPTIONS, name) < 0
+      unknown->add(name)
+    endif
+  endfor
+  return sort(unknown)
+enddef
+
+
+# Levenshtein would be nicer, but a shared prefix or suffix catches the typos
+# people actually make (widht, show_sings, requst_timeout_ms) without dragging
+# a distance function into a diagnostic.
+def NearestOption(name: string): string
+  var best = ''
+  var best_score = 0
+  for candidate in KNOWN_OPTIONS
+    var limit = min([len(name), len(candidate)])
+    var prefix = 0
+    while prefix < limit && name[prefix] ==# candidate[prefix]
+      prefix += 1
+    endwhile
+    var suffix = 0
+    while suffix < limit - prefix
+        && name[len(name) - 1 - suffix] ==# candidate[len(candidate) - 1 - suffix]
+      suffix += 1
+    endwhile
+    var score = prefix + suffix
+    if score > best_score
+      best_score = score
+      best = candidate
+    endif
+  endfor
+  # 'simpleminimap_' alone is 14 characters, so anything at or below that
+  # matched nothing beyond the prefix every option shares.
+  return best_score > 15 ? best : ''
+enddef
+
+
 export def Health()
   var daemon = FindDaemon()
-  var daemon_version = 'unknown'
-  if daemon !=# ''
-    try
-      var version_output = systemlist(shellescape(daemon) .. ' --version')
-      if v:shell_error == 0 && !empty(version_output)
-        daemon_version = version_output[0]
-      endif
-    catch
-    endtry
-  endif
+  ProbeDaemonVersion(daemon)
   var search_supported = exists('*matchbufline')
   var checks = [
     printf('[%s] Vim version: %d', v:version >= 900 ? 'OK' : 'FAIL', v:version),
     printf('[%s] +job / +channel: %d / %d', has('job') && has('channel') ? 'OK' : 'FAIL', has('job'), has('channel')),
     printf('[%s] daemon: %s', daemon ==# '' ? 'FAIL' : 'OK', daemon ==# '' ? 'not found' : daemon),
-    printf('[INFO] daemon version: %s', daemon_version),
-    printf('[%s] backend: %s, protocol v%d ready=%d', BackendRunning() ? 'OK' : 'INFO', BackendRunning() ? job_status(backend_job) : 'stopped', PROTOCOL_VERSION, backend_ready ? 1 : 0),
+    printf('[INFO] daemon version: %s', daemon_version ==# ''
+      ? (type(daemon_version_job) == v:t_job ? 'probing…' : 'not probed yet')
+      : daemon_version),
+    printf('[%s] daemon protocol: %s',
+      backend_protocol == 0 ? 'INFO' : (backend_protocol == PROTOCOL_VERSION ? 'OK' : 'FAIL'),
+      backend_protocol == 0
+        ? printf('not negotiated yet; this plugin expects v%d', PROTOCOL_VERSION)
+        : (backend_protocol == PROTOCOL_VERSION
+            ? printf('v%d', backend_protocol)
+            : printf('daemon v%d, plugin expects v%d — run ./install.sh, then :SimpleMinimapRestart',
+                backend_protocol, PROTOCOL_VERSION))),
+    printf('[%s] backend: %s, ready=%d', BackendRunning() ? 'OK' : 'INFO', BackendRunning() ? job_status(backend_job) : 'stopped', backend_ready ? 1 : 0),
     printf('[INFO] backend latency: %s', backend_latency_ms >= 0.0 ? printf('%.1fms', backend_latency_ms) : 'n/a'),
     printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
     printf('[%s] density shading: %s', ShadingEnabled() ? 'OK' : 'INFO', ShadingEnabled() ? 'enabled' : (has('textprop') == 1 ? 'disabled by g:simpleminimap_shading' : 'needs +textprop')),
@@ -2394,6 +2515,18 @@ export def Health()
             backend_restart_attempts, MAX_BACKEND_RESTARTS)),
     printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
   ]
+  # Braille and block glyphs simply cannot be encoded in a single-byte
+  # 'encoding', so the minimap renders as garbage with no other clue why.
+  if &encoding !=? 'utf-8' && get(g:, 'simpleminimap_render_style', 'braille') !=# 'ascii'
+    checks->add(printf(
+      "[WARN] encoding is %s, not utf-8 — set g:simpleminimap_render_style = 'ascii'",
+      &encoding))
+  endif
+  for name in UnknownOptions()
+    var nearest = NearestOption(name)
+    checks->add(printf('[WARN] unknown option g:%s%s', name,
+      nearest ==# '' ? '' : printf(' (did you mean g:%s?)', nearest)))
+  endfor
   for [key, session] in items(sessions)
     var last_render_ms = get(session, 'last_render_ms', -1.0)
     checks->add(printf('[INFO] session %s: %s, renders=%d cache-skips=%d last=%s', key,
@@ -2419,6 +2552,9 @@ export def DebugStatus(): dict<any>
     backend_restart_attempts: backend_restart_attempts,
     backend_breaker_tripped: backend_breaker_tripped,
     backend_timeouts: backend_timeouts,
+    backend_protocol: backend_protocol,
+    daemon_version: daemon_version,
+    unknown_options: UnknownOptions(),
     backend_latency_ms: backend_latency_ms,
     pending_requests: deepcopy(requests),
   }

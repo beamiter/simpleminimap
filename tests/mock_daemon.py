@@ -14,6 +14,23 @@ def emit(line: str) -> None:
     sys.stdout.flush()
 
 
+# A daemon left behind by a plugin update that never rebuilt lib/ announces an
+# older protocol; the plugin has to say so and name the fix.
+PROTOCOL = int(os.environ.get('SIMPLEMINIMAP_TEST_PROTOCOL', '') or PROTOCOL)
+
+# The diagnostic flags the whole simple* suite shares.  They answer and exit
+# without touching any of the failure modes below -- the plugin probes
+# --version in a separate process, and a probe that consumed the one-shot crash
+# marker would quietly disarm the crash it was meant to leave for the daemon.
+if len(sys.argv) > 1:
+    if sys.argv[1] == '--version':
+        emit(f'simpleminimap-daemon (mock) protocol {PROTOCOL}')
+    elif sys.argv[1] == '--self-test':
+        emit('ok')
+    else:
+        emit('usage: mock_daemon.py [--version|--help|--self-test]')
+    sys.exit(0)
+
 emit(f'READY\t{PROTOCOL}')
 crash_once = os.environ.get('SIMPLEMINIMAP_TEST_CRASH_ONCE', '')
 if crash_once:
