@@ -31,6 +31,14 @@ if len(sys.argv) > 1:
         emit('usage: mock_daemon.py [--version|--help|--self-test]')
     sys.exit(0)
 
+# One line per real daemon start, so a test can assert how many processes a
+# failure mode forked.  Written below the diagnostic flags above, which exit
+# first, so the plugin's --version probe is never counted as a daemon.
+spawn_log = os.environ.get('SIMPLEMINIMAP_TEST_SPAWN_LOG', '')
+if spawn_log:
+    with open(spawn_log, 'a') as handle:
+        handle.write(f'{os.getpid()}\n')
+
 emit(f'READY\t{PROTOCOL}')
 crash_once = os.environ.get('SIMPLEMINIMAP_TEST_CRASH_ONCE', '')
 if crash_once:

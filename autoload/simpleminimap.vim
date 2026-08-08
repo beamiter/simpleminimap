@@ -53,6 +53,10 @@ var backend_restart_attempts = 0
 # the budget on each success and be respawned every ~100ms for ever.
 var backend_restart_window: any = reltime()
 var backend_breaker_tripped = false
+# Why the breaker tripped: a daemon that keeps crashing and one that keeps
+# going silent both spend the same budget, and 'crash loop' is a lie for the
+# second one.
+var backend_breaker_reason = ''
 var backend_timeouts = 0
 var consecutive_timeouts = 0
 var backend_protocol = 0
@@ -481,6 +485,29 @@ def ScheduleBackendRestart(delay: number)
 enddef
 
 
+# The one place a restart is paid for.  Every automatic respawn -- a crash, a
+# daemon that stopped answering -- goes through here, so three restarts per
+# rolling window is a total, not a total per failure mode.  Returns false once
+# the budget is spent, having tripped the breaker.
+def ConsumeRestartBudget(reason: string): bool
+  if reltimefloat(reltime(backend_restart_window)) * 1000.0 > RESTART_WINDOW_MS
+    backend_restart_attempts = 0
+    backend_restart_window = reltime()
+  endif
+  if backend_restart_attempts < MAX_BACKEND_RESTARTS
+    backend_restart_attempts += 1
+    return true
+  endif
+  # Report it once and stop, rather than forking a process every 100ms for
+  # the rest of the session.  :SimpleMinimapRestart re-arms the breaker.
+  backend_breaker_tripped = true
+  backend_breaker_reason = reason
+  Log(printf('crash-loop breaker tripped after %d restarts (%s)',
+    backend_restart_attempts, reason))
+  return false
+enddef
+
+
 def BackendExit(exited_job: job, status: number)
   if type(backend_job) == v:t_job
       && get(job_info(exited_job), 'process', -1) != get(job_info(backend_job), 'process', -2)
@@ -502,19 +529,7 @@ def BackendExit(exited_job: job, status: number)
   Log(backend_error)
   var should_restart = explicitly_requested
   if unexpected && get(g:, 'simpleminimap_auto_restart', 1)
-    if reltimefloat(reltime(backend_restart_window)) * 1000.0 > RESTART_WINDOW_MS
-      backend_restart_attempts = 0
-      backend_restart_window = reltime()
-    endif
-    if backend_restart_attempts < MAX_BACKEND_RESTARTS
-      backend_restart_attempts += 1
-      should_restart = true
-    else
-      # Report it once and stop, rather than forking a process every 100ms for
-      # the rest of the session.  :SimpleMinimapRestart re-arms the breaker.
-      backend_breaker_tripped = true
-      Log(printf('crash-loop breaker tripped after %d restarts', backend_restart_attempts))
-    endif
+    should_restart = ConsumeRestartBudget('crash loop')
   endif
   if should_restart && !empty(sessions)
     var delays = [100, 350, 1000]
@@ -526,7 +541,7 @@ def BackendExit(exited_job: job, status: number)
   else
     for key in keys(sessions)
       RenderMessage(key, backend_breaker_tripped
-        ? ['SimpleMinimap backend stopped', 'crash loop', ':SimpleMinimapRestart']
+        ? ['SimpleMinimap backend stopped', backend_breaker_reason, ':SimpleMinimapRestart']
         : ['SimpleMinimap backend stopped', backend_error])
     endfor
   endif
@@ -993,9 +1008,38 @@ def ExpireRequest(key: string, request_id: number, _timer: number)
   # is not coming back, and only a fresh process recovers from that.
   if consecutive_timeouts >= 2
     consecutive_timeouts = 0
-    Log('restarting a wedged backend after repeated request timeouts')
-    Restart()
+    RestartUnresponsiveBackend()
   endif
+enddef
+
+
+# Restarting a wedged daemon used to go through the user-facing Restart(),
+# which clears backend_restart_attempts, backend_restart_window and
+# backend_breaker_tripped -- so timeout restarts were completely unbudgeted,
+# refunded any crash budget already spent, and respawned the daemon even when
+# g:simpleminimap_auto_restart was 0.  A daemon that answers the handshake and
+# then goes silent forked a new process every couple of deadlines for the life
+# of the session.  Timeouts now spend the same rolling budget as crashes.
+def RestartUnresponsiveBackend()
+  if !get(g:, 'simpleminimap_auto_restart', 1)
+    # The user asked for no automatic respawn.  Leave the wedged process
+    # alone: killing it here would only make the next render start a
+    # replacement through StartBackend(), which is the respawn they disabled.
+    Log('not restarting an unresponsive backend: g:simpleminimap_auto_restart is 0')
+    return
+  endif
+  if !ConsumeRestartBudget('no response')
+    # Budget spent.  Stop the wedged process instead of replacing it; the
+    # breaker keeps StartBackend() from forking another one, and BackendExit()
+    # reports why.
+    StopBackend(false)
+    return
+  endif
+  Log('restarting a wedged backend after repeated request timeouts')
+  for key in keys(sessions)
+    RenderMessage(key, ['SimpleMinimap', 'restarting backend…'])
+  endfor
+  StopBackend(true)
 enddef
 
 
@@ -1878,6 +1922,7 @@ export def Restart()
   backend_restart_attempts = 0
   backend_restart_window = reltime()
   backend_breaker_tripped = false
+  backend_breaker_reason = ''
   consecutive_timeouts = 0
   for key in keys(sessions)
     RenderMessage(key, ['SimpleMinimap', 'restarting backend…'])
@@ -2509,8 +2554,9 @@ export def Health()
         : 'disabled by g:simpleminimap_request_timeout_ms; a wedged daemon will not be noticed'),
     printf('[%s] crash-loop breaker: %s', backend_breaker_tripped ? 'FAIL' : 'OK',
       backend_breaker_tripped
-        ? printf('tripped after %d restarts in %ds; run :SimpleMinimapRestart',
-            backend_restart_attempts, float2nr(RESTART_WINDOW_MS / 1000.0))
+        ? printf('tripped after %d restarts in %ds (%s); run :SimpleMinimapRestart',
+            backend_restart_attempts, float2nr(RESTART_WINDOW_MS / 1000.0),
+            backend_breaker_reason)
         : printf('armed, %d/%d restarts used in the current window',
             backend_restart_attempts, MAX_BACKEND_RESTARTS)),
     printf('[INFO] side/style/sampling: %s / %s / %s', get(g:, 'simpleminimap_side', 'right'), get(g:, 'simpleminimap_render_style', 'braille'), get(g:, 'simpleminimap_sampling', 'adaptive')),
@@ -2551,6 +2597,7 @@ export def DebugStatus(): dict<any>
     backend_error: backend_error,
     backend_restart_attempts: backend_restart_attempts,
     backend_breaker_tripped: backend_breaker_tripped,
+    backend_breaker_reason: backend_breaker_reason,
     backend_timeouts: backend_timeouts,
     backend_protocol: backend_protocol,
     daemon_version: daemon_version,
@@ -2576,6 +2623,7 @@ export def Stop()
   backend_restart_attempts = 0
   backend_restart_window = reltime()
   backend_breaker_tripped = false
+  backend_breaker_reason = ''
   backend_timeouts = 0
   consecutive_timeouts = 0
 enddef

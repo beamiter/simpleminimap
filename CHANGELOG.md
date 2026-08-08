@@ -32,6 +32,16 @@ All notable changes to SimpleMinimap are documented here.
   daemon 会被每 100ms 重新 fork 一遍,直到会话结束(实测 8 秒内 57 次)。改为
   60 秒滚动窗口内的固定预算;用尽后熔断,并且熔断后 *任何* 路径都不再启动进程
   (此前渲染路径会绕过定时器直接再 fork 一个),`:SimpleMinimapRestart` 才能复位。
+- 超时触发的重启此前走的是面向用户的 `Restart()`,而它会清零重启预算、滚动窗口和
+  熔断状态。于是“卡死后重启”这条路径完全不受预算约束:它绕过
+  `g:simpleminimap_auto_restart = 0`(`StopBackend(true)` 把这次退出标成显式重启,
+  于是 `BackendExit()` 根本不去看这个选项),还会把崩溃路径已经花掉的预算退回去——
+  先崩两次再卡死的 daemon 又拿回满额预算。实测:握手成功后不再回复的 daemon,
+  10 秒内 fork 了 28 个进程,`backend_restart_attempts` 始终是 0,熔断永远不跳。
+  现在超时重启与崩溃重启共用同一份 60 秒滚动预算,用尽即熔断并停掉卡死的进程;
+  `g:simpleminimap_auto_restart` 为 0 时则完全不重启,只记录日志。
+- 熔断现在记录跳闸原因,`:SimpleMinimapHealth` 与 minimap 上的提示会区分
+  `crash loop` 与 `no response`,不再把卡死一律说成崩溃循环。
 - `:SimpleMinimapHealth` 现在报告请求超时设置与累计超时次数、重启预算用量与熔断
   状态。help 里关于 daemon 监管的那一节此前描述的是 simplecore + JSON over stdio,
   而实际跑的是本仓库自己的 supervisor + TAB 分隔行协议;已按实际实现重写。

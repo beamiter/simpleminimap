@@ -247,6 +247,10 @@ All options must be set before the plugin is loaded.
         budget is deliberately *not* reset by a successful render, because a
         daemon that crashes after every render makes progress every time and
         would otherwise be respawned for ever.
+        This governs every automatic restart, including the one triggered by
+        repeated request timeouts (see |g:simpleminimap_request_timeout_ms|):
+        those spend the same budget, and setting this option to 0 leaves a
+        wedged daemon alone instead of silently replacing it.
 
 *g:simpleminimap_request_timeout_ms*
         Number, default 5000, clamped to 100..600000.  How long to wait for a
@@ -255,8 +259,13 @@ All options must be set before the plugin is loaded.
         still a live process with a healthy |job_status()|, so without a
         deadline the minimap keeps showing pre-edit content indefinitely.  On
         expiry the request is dropped and the minimap says so; two consecutive
-        expiries restart the daemon.  Set to 0 to disable the deadline, which
-        |:SimpleMinimapHealth| then reports as a warning.
+        expiries restart the daemon, out of the same restart budget a crash
+        spends (see |g:simpleminimap_auto_restart|).  A daemon that answers the
+        handshake and then goes silent for ever is therefore given up on after
+        three restarts rather than replaced for the rest of the session, and
+        |:SimpleMinimapHealth| reports the breaker as tripped "(no response)".
+        Set to 0 to disable the deadline, which |:SimpleMinimapHealth| then
+        reports as a warning.
 
 *g:simpleminimap_mouse_scroll_lines*
         Number, clamped to 1..50.  Source lines scrolled per mouse wheel event
@@ -383,9 +392,9 @@ Backend stopped or protocol mismatch
 The minimap froze but the daemon looks fine
         A daemon that accepts input and stops answering is a live process.
         Health reports the expired-request count next to the deadline; see
-        |g:simpleminimap_request_timeout_ms|.  Repeated crashes trip the
-        crash-loop breaker, which Health reports as tripped and
-        |:SimpleMinimapRestart| clears.
+        |g:simpleminimap_request_timeout_ms|.  Repeated crashes -- and repeated
+        timeouts -- trip the crash-loop breaker, which Health reports as
+        tripped, with the reason, and |:SimpleMinimapRestart| clears.
 
 ==============================================================================
 
@@ -414,6 +423,10 @@ What the supervision guarantees:
 - Requests are correlated to replies by id and time out, so a daemon that
   accepts input and stops answering cannot leave the minimap stale behind a
   healthy-looking process.  See |g:simpleminimap_request_timeout_ms|.
+- A restart forced by repeated timeouts spends the same budget as one forced
+  by a crash, so "stops answering" is as bounded as "keeps dying": there is one
+  budget, not one per failure mode, and it is never refunded by switching
+  between them.
 
 :SimpleMinimapHealth
         Report daemon path and version, run state, protocol version, measured

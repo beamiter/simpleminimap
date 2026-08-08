@@ -194,8 +194,8 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |
 | `g:simpleminimap_auto_open` | `0` | Vim 启动或进入标签页时自动打开 |
-| `g:simpleminimap_auto_restart` | `1` | 后台异常退出时自动重启，60 秒滚动窗口内最多 3 次；用尽后熔断，只有 `:SimpleMinimapRestart` 能恢复 |
-| `g:simpleminimap_request_timeout_ms` | `5000` | 单次渲染请求的超时（毫秒，限制 `100..600000`）；连续两次超时会重启 daemon，设为 `0` 关闭 |
+| `g:simpleminimap_auto_restart` | `1` | 后台异常退出（或连续超时卡死）时自动重启，60 秒滚动窗口内最多 3 次；用尽后熔断，只有 `:SimpleMinimapRestart` 能恢复；设为 `0` 时任何路径都不会自动拉起进程 |
+| `g:simpleminimap_request_timeout_ms` | `5000` | 单次渲染请求的超时（毫秒，限制 `100..600000`）；连续两次超时会重启 daemon，且与崩溃共用同一份重启预算，设为 `0` 关闭 |
 | `g:simpleminimap_mouse_scroll_lines` | 跟随 `'mousescroll'` | 在 minimap 上滚动一格滚轮时源窗口移动的行数，限制为 `1..50`；未显式设置时取 `'mousescroll'` 的 `ver:`，没有该选项或为 `ver:0` 时回退到 `3` |
 | `g:simpleminimap_drag_thumb` | `1` | 从视口高亮带内起手的左键拖动是否滚动源窗口（滚动条式）；设为 `0` 恢复“拖动即预览” |
 | `g:simpleminimap_set_default_mapping` | `1` | 是否在 `<leader>m` 空闲时安装默认映射 |
