@@ -64,6 +64,7 @@ g:simpleminimap_mouse_scroll_lines = ClampNumber(get(g:, 'simpleminimap_mouse_sc
 g:simpleminimap_drag_thumb = Flag(get(g:, 'simpleminimap_drag_thumb', 1), 1)
 g:simpleminimap_render_style = Choice(get(g:, 'simpleminimap_render_style', 'braille'), 'braille', ['braille', 'blocks', 'ascii'])
 g:simpleminimap_sampling = Choice(get(g:, 'simpleminimap_sampling', 'adaptive'), 'adaptive', ['adaptive', 'uniform'])
+g:simpleminimap_fill = Choice(get(g:, 'simpleminimap_fill', 'proportional'), 'proportional', ['proportional', 'compact'])
 g:simpleminimap_side = Choice(get(g:, 'simpleminimap_side', 'right'), 'right', ['left', 'right'])
 var configured_daemon_path = get(g:, 'simpleminimap_daemon_path', '')
 g:simpleminimap_daemon_path = type(configured_daemon_path) == v:t_string ? configured_daemon_path : ''

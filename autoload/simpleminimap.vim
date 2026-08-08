@@ -1022,6 +1022,24 @@ export def SampleCacheStats(): dict<number>
 enddef
 
 
+# How many minimap rows a buffer of this many lines gets in a window this tall.
+#
+# 'compact' is the historical fixed scale of four source lines per row, which
+# means any file shorter than four times the minimap height rendered into the
+# top fraction of the window and left the rest blank -- a 40-line file in a
+# 50-row minimap drew 10 rows and 40 dead ones, the viewport highlight covered
+# the whole drawn block wherever you were, and the scroll position said
+# nothing.  Most files people edit are shorter than that, so it was the default
+# experience on a tall terminal.  'proportional' spends the window it has: one
+# row per line until the rows run out.
+def RowCountFor(height: number, source_lines: number): number
+  if get(g:, 'simpleminimap_fill', 'proportional') ==# 'compact'
+    return min([height, max([1, (source_lines + 3) / 4])])
+  endif
+  return min([height, max([1, source_lines])])
+enddef
+
+
 def BuildRequestBody(key: string): dict<any>
   var session = sessions[key]
   var dimensions = WindowDimensions(session.winid)
@@ -1032,7 +1050,7 @@ def BuildRequestBody(key: string): dict<any>
     return {}
   endif
   var source_lines = max([1, get(source_info[0], 'linecount', 1)])
-  var row_count = min([height, max([1, (source_lines + 3) / 4])])
+  var row_count = RowCountFor(height, source_lines)
   var max_columns = Clamp(get(g:, 'simpleminimap_max_columns', 120), 20, 1000)
   var tabstop = Clamp(getbufvar(session.source_bufnr, '&tabstop'), 1, 64)
   var style = get(g:, 'simpleminimap_render_style', 'braille')
@@ -2433,11 +2451,14 @@ export def Statusline(): string
 enddef
 
 
+# A minimap taller than the file has blank rows below the drawn ones.  Pressing
+# <CR> or <Space> down there used to do nothing at all; resolve to the last
+# real row instead, which is the row the user is pointing just past.
 def SourceTargetForRow(session: dict<any>, row_number: number): number
-  if row_number < 1 || row_number > len(session.rows)
+  if row_number < 1 || empty(session.rows)
     return 0
   endif
-  var row = session.rows[row_number - 1]
+  var row = session.rows[Clamp(row_number, 1, len(session.rows)) - 1]
   return row.start + ((row.end - row.start) / 2)
 enddef
 
@@ -2950,6 +2971,7 @@ const KNOWN_OPTIONS = [
   'simpleminimap_debounce',
   'simpleminimap_debug',
   'simpleminimap_drag_thumb',
+  'simpleminimap_fill',
   'simpleminimap_ignore_filetypes',
   'simpleminimap_incremental',
   'simpleminimap_max_columns',

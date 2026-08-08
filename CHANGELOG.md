@@ -111,6 +111,14 @@ All notable changes to SimpleMinimap are documented here.
 - quickfix 与 location list 的投影在 `QuickFixCmdPost` 上立即刷新,不必等到下一次
   `CursorHold`(最长 `'updatetime'`)才看到新的 `:grep` 结果。
 - 新增高亮组 `SimpleMinimapMark`(默认链接 `Identifier`)。
+- 短文件现在按比例铺满 minimap(`g:simpleminimap_fill`,默认 `'proportional'`)。
+  此前的刻度固定是“4 行源码 = 1 行 minimap”,于是任何短于 minimap 高度四倍的文件都
+  只画在窗口顶部一小块里:50 行高的 minimap 打开一个 40 行的文件,只画 10 行,剩下
+  40 行是死的;视口高亮无论光标在哪都盖住整块,滚动位置什么也说明不了,点在空白区
+  更是毫无反应。而在高一点的终端上,大多数文件都短于这个门槛——也就是说这是*默认*
+  体验。现在默认一行源码占一行 minimap,想要固定刻度可设 `'compact'`。
+- 顺带修掉:点击/跳转到已渲染行之下的空白区此前解析为“没有目标”,什么都不做;
+  现在解析到最后一行真实的 row。
 - 增量采样(`g:simpleminimap_incremental`,默认开)。此前每次渲染都要重读整个
   buffer:每个 minimap 行要取最多 12 行源码并逐字符归一化成显示单元格,60 行的
   minimap 就是 720 次——而且在一行里敲一个字符,这 720 次会在每个防抖周期里原样

@@ -182,6 +182,22 @@ All options must be set before the plugin is loaded.
         String, default "braille".  Accepted values are "braille", "blocks"
         and "ascii".  Unknown values fall back to "braille".
 
+*g:simpleminimap_fill*
+        String, 'proportional' (default) or 'compact'.  How many minimap rows a
+        file gets.
+
+        'proportional' spends the window it has: one row per source line until
+        the rows run out, then bands lines together as before.  'compact' keeps
+        the historical fixed scale of four source lines per row.
+
+        The difference only shows on a file shorter than four times the minimap
+        height -- which is most files on a tall terminal.  Under 'compact' such
+        a file rendered into the top fraction of the window and left the rest
+        blank: the viewport highlight covered the whole drawn block wherever
+        the cursor was, the scroll position said nothing, and a jump aimed at
+        the blank tail did nothing at all.  A jump below the last drawn row now
+        resolves to that row in both modes.
+
 *g:simpleminimap_sampling*
         String, default "adaptive".  "adaptive" samples the start, midpoint
         and end of each vertical band and keeps the most informative line.

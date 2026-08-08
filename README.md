@@ -184,6 +184,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_max_columns` | `120` | 每条样本最多分析的逻辑列数，限制为 `20..1000` |
 | `g:simpleminimap_debounce` | `80` | 编辑后的重绘防抖，单位毫秒，限制为 `0..2000` |
 | `g:simpleminimap_render_style` | `'braille'` | `'braille'`、`'blocks'` 或 `'ascii'` |
+| `g:simpleminimap_fill` | `'proportional'` | minimap 行数策略：`'proportional'` 每行源码占一行（直到行数用完），`'compact'` 保持历史上固定的“4 行源码 = 1 行 minimap” |
 | `g:simpleminimap_sampling` | `'adaptive'` | `'adaptive'` 会在每个采样带中选择更有信息量的代码行；`'uniform'` 固定取中点 |
 | `g:simpleminimap_side` | `'right'` | 新建 minimap 的位置：`'right'` 或 `'left'` |
 | `g:simpleminimap_daemon_path` | `''` | 后台可执行文件绝对路径；空值时自动查找 |

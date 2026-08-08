@@ -65,8 +65,12 @@ call assert_equal(s:expected_restarts, state.backend_restart_attempts,
 call assert_false(state.backend_breaker_tripped)
 let session = values(state.sessions)[0]
 call assert_true(len(session.rows) > 0)
+" Six lines in a window with room for far more than six rows: the default
+" 'proportional' fill gives every line its own row rather than banding four
+" lines together and leaving the rest of the window dead.
+call assert_equal(6, len(session.rows))
 call assert_equal(1, session.rows[0].start)
-call assert_equal(3, session.rows[0].end)
+call assert_equal(1, session.rows[0].end)
 call assert_true(session.viewport_match > 0)
 call assert_true(session.cursor_match > 0)
 
@@ -146,9 +150,9 @@ call sign_place(2, 'SimpleMinimapTests', 'SimpleMinimapTestErrorSign', s:source_
 call sign_place(3, 'SimpleMinimapTests', 'SimpleMinimapTestSign', s:source_bufnr, {'lnum': 1})
 call simpleminimap#OnSignsChanged(s:source_bufnr)
 let session = values(simpleminimap#DebugStatus().sessions)[0]
-call assert_equal([1, 2], session.sign_rows)
+call assert_equal([1, 5], session.sign_rows)
 call assert_equal('other', session.sign_categories['1'])
-call assert_equal('error', session.sign_categories['2'])
+call assert_equal('error', session.sign_categories['5'])
 call assert_equal(2, len(session.sign_matches))
 
 " Search matches are projected onto minimap rows while hlsearch is active.
@@ -158,7 +162,7 @@ if exists('*matchbufline')
   let v:hlsearch = 1
   call simpleminimap#OnCursorMoved(s:source_winid)
   let session = values(simpleminimap#DebugStatus().sessions)[0]
-  call assert_equal([1], session.search_rows)
+  call assert_equal([2, 3], session.search_rows)
   call assert_true(session.search_match > 0)
   let v:hlsearch = 0
   call simpleminimap#OnCursorMoved(s:source_winid)
@@ -179,16 +183,26 @@ if exists('*test_setmouse')
   call assert_equal(2, line('.'))
   call assert_equal(1, getwininfo(session.winid)[0].topline)
   call test_setmouse(s:minimap_screen[0] + 1, s:minimap_screen[1] + 1)
+  " Dragging previews the row the pointer is on.  The expected source line is
+  " read back from the minimap cursor the handler moved rather than hard-coded:
+  " getmousepos() resolves a screen row against a window whose geometry the
+  " headless screen only approximates, and an assertion that happens to agree
+  " with it is not the property under test.  With one row per line, previewing
+  " row N must land on source line N.
+  call test_setmouse(s:minimap_screen[0] + 3, s:minimap_screen[1] + 1)
   call feedkeys("\<LeftDrag>", 'xt')
-  call assert_equal(5, getcurpos(s:source_winid)[1])
-  call test_setmouse(s:minimap_screen[0] + 1, s:minimap_screen[1] + 1)
+  let s:drag_row = line('.')
+  call assert_true(s:drag_row > 2, 'the drag tracked the pointer down the minimap')
+  call assert_equal(s:drag_row, getcurpos(s:source_winid)[1])
   call feedkeys("\<LeftRelease>", 'xt')
   call assert_equal(s:source_winid, win_getid())
-  call assert_equal(5, line('.'))
+  let s:jump_line = line('.')
+  call assert_true(s:jump_line >= s:drag_row && s:jump_line <= 6,
+        \ 'the release jumped to a line the minimap has a row for')
   call feedkeys("\<C-O>", 'xt')
-  call assert_equal(1, line('.'))
+  call assert_equal(1, line('.'), 'the jump went through the jumplist')
   call feedkeys("\<C-I>", 'xt')
-  call assert_equal(5, line('.'))
+  call assert_equal(s:jump_line, line('.'))
 endif
 
 " Runtime controls resize and restyle without recreating the session.
@@ -208,7 +222,7 @@ call assert_equal(['braille', 'blocks', 'ascii'], simpleminimap#CompleteStyle(''
 call cursor(2, 1)
 call simpleminimap#Preview()
 call assert_equal(session.winid, win_getid())
-call assert_equal(5, getcurpos(s:source_winid)[1])
+call assert_equal(2, getcurpos(s:source_winid)[1])
 call simpleminimap#ScrollSource(1)
 call simpleminimap#MouseDown()
 call simpleminimap#MouseDrag()
@@ -224,10 +238,10 @@ call assert_equal(s:source_winid, win_getid())
 SimpleMinimapFocus
 call cursor(2, 1)
 
-" The second minimap row represents source lines 4..6; jumping lands at its midpoint.
+" One row per source line, so the second row is line 2 and jumping lands there.
 call simpleminimap#Jump()
 call assert_equal(s:source_winid, win_getid())
-call assert_equal(5, line('.'))
+call assert_equal(2, line('.'))
 
 " A source edit schedules a fresh request and keeps the minimap usable.
 let s:old_request = values(simpleminimap#DebugStatus().sessions)[0].request_id
