@@ -93,9 +93,34 @@ if exists('*matchbufline')
   call assert_true(s:marked.start <= 25000 && 25000 <= s:marked.end,
         \ 'the marked row is the band containing the match')
 
+  " Past the scan budget the projection reports itself incomplete rather than
+  " silently under-reporting matches, and the statusline says so.
+  call append(line('$'), map(range(1, 200000), '"filler " .. v:val'))
+  call simpleminimap#Refresh()
+  let s:attempt = 0
+  while s:Session().source_lines < 250000 && s:attempt < 300
+    sleep 20m
+    let s:attempt += 1
+  endwhile
+  call assert_equal(250000, s:Session().source_lines, 'the padded fixture renders')
+
+  let @/ = 'zzz-no-such-text-zzz'
+  let v:hlsearch = 1
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  let s:session = s:Session()
+  call assert_true(s:session.search_partial,
+        \ 'a buffer past the scan budget is projected partially')
+  call assert_equal([], s:session.search_rows)
+  let g:statusline_winid = s:session.winid
+  call assert_match('\~', simpleminimap#Statusline(),
+        \ 'the statusline marks an incomplete projection')
+  unlet g:statusline_winid
+
   let v:hlsearch = 0
   call simpleminimap#OnCursorMoved(s:source_winid)
   call assert_equal([], s:Session().search_rows)
+  call assert_false(s:Session().search_partial,
+        \ 'the partial marker is cleared with the projection')
   set nohlsearch
 endif
 
