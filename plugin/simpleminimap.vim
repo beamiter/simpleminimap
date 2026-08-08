@@ -103,6 +103,18 @@ nnoremap <silent> <Plug>(simpleminimap-toggle) <Cmd>SimpleMinimap<CR>
 nnoremap <silent> <Plug>(simpleminimap-focus) <Cmd>SimpleMinimapFocus<CR>
 nnoremap <silent> <Plug>(simpleminimap-pin) <Cmd>SimpleMinimapPin<CR>
 nnoremap <silent> <Plug>(simpleminimap-toggle-pin) <Cmd>SimpleMinimapTogglePin<CR>
+# One target per command, so `g:simpleminimap_set_default_mapping = 0` does not
+# force users back to hand-written <Cmd>SimpleMinimap...<CR> literals that
+# cannot be redefined or deprecated from here.
+nnoremap <silent> <Plug>(simpleminimap-open) <Cmd>SimpleMinimapOpen<CR>
+nnoremap <silent> <Plug>(simpleminimap-close) <Cmd>SimpleMinimapClose<CR>
+nnoremap <silent> <Plug>(simpleminimap-unpin) <Cmd>SimpleMinimapUnpin<CR>
+nnoremap <silent> <Plug>(simpleminimap-refresh) <Cmd>SimpleMinimapRefresh<CR>
+nnoremap <silent> <Plug>(simpleminimap-refresh-all) <Cmd>SimpleMinimapRefresh!<CR>
+nnoremap <silent> <Plug>(simpleminimap-style) <Cmd>SimpleMinimapStyle<CR>
+nnoremap <silent> <Plug>(simpleminimap-restart) <Cmd>SimpleMinimapRestart<CR>
+nnoremap <silent> <Plug>(simpleminimap-health) <Cmd>SimpleMinimapHealth<CR>
+nnoremap <silent> <Plug>(simpleminimap-log) <Cmd>SimpleMinimapLog<CR>
 if g:simpleminimap_set_default_mapping && maparg('<leader>m', 'n') ==# ''
   nmap <silent> <leader>m <Plug>(simpleminimap-toggle)
 endif

@@ -13,6 +13,20 @@ let g:simpleminimap_auto_close = 0
 let g:simpleminimap_side = 'left'
 runtime plugin/simpleminimap.vim
 
+" Every command has a <Plug> target, so a user who turns the default mapping
+" off never has to hand-write a <Cmd>SimpleMinimap...<CR> literal.
+for s:target in ['toggle', 'open', 'close', 'focus', 'pin', 'unpin',
+      \ 'toggle-pin', 'refresh', 'refresh-all', 'style', 'restart', 'health',
+      \ 'log']
+  call assert_notequal('',
+        \ maparg('<Plug>(simpleminimap-' .. s:target .. ')', 'n'),
+        \ '<Plug>(simpleminimap-' .. s:target .. ') is defined')
+endfor
+call assert_match('SimpleMinimapRefresh!',
+      \ maparg('<Plug>(simpleminimap-refresh-all)', 'n'))
+call assert_notmatch('!', maparg('<Plug>(simpleminimap-refresh)', 'n'))
+call assert_match('SimpleMinimapUnpin', maparg('<Plug>(simpleminimap-unpin)', 'n'))
+
 " Filetypes can be excluded without special-casing their buftype.
 let g:simpleminimap_ignore_filetypes = ['simpleminimap-test-ignore']
 set filetype=simpleminimap-test-ignore

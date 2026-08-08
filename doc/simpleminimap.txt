@@ -107,12 +107,21 @@ Both values must be 1.
 ==============================================================================
 4. MAPPINGS                                           *simpleminimap-mappings*
 
-The plugin exposes:                             *<Plug>(simpleminimap-toggle)*
+The plugin exposes one target per command:      *<Plug>(simpleminimap-toggle)*
 
-  <Plug>(simpleminimap-toggle)
+  <Plug>(simpleminimap-toggle)        :SimpleMinimap
+  <Plug>(simpleminimap-open)          :SimpleMinimapOpen
+  <Plug>(simpleminimap-close)         :SimpleMinimapClose
   <Plug>(simpleminimap-focus)                    *<Plug>(simpleminimap-focus)*
   <Plug>(simpleminimap-pin)                        *<Plug>(simpleminimap-pin)*
+  <Plug>(simpleminimap-unpin)         :SimpleMinimapUnpin
   <Plug>(simpleminimap-toggle-pin)          *<Plug>(simpleminimap-toggle-pin)*
+  <Plug>(simpleminimap-refresh)       :SimpleMinimapRefresh
+  <Plug>(simpleminimap-refresh-all)   :SimpleMinimapRefresh!
+  <Plug>(simpleminimap-style)         :SimpleMinimapStyle
+  <Plug>(simpleminimap-restart)       :SimpleMinimapRestart
+  <Plug>(simpleminimap-health)        :SimpleMinimapHealth
+  <Plug>(simpleminimap-log)           :SimpleMinimapLog
 
 The pin target is idempotent: invoking it while already pinned keeps the pin.
 Use the toggle-pin target for a mapping that alternates between both states.

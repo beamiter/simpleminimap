@@ -73,6 +73,9 @@ All notable changes to SimpleMinimap are documented here.
 
 ### 新增
 
+- 每条命令都补齐了 `<Plug>` 目标(open/close/unpin/refresh/refresh-all/style/
+  restart/health/log)。此前 14 条命令只有 4 个 `<Plug>`,关掉默认映射的用户只能
+  手写 `<Cmd>SimpleMinimap...<CR>` 字面量,插件这边既无法重定义也无法弃用。
 - 视口拖拽:按住左键从视口高亮带内起手,拖动的是视口本身——minimap 直接当滚动条
   用,这是它最常见的用途,此前做不到。带外起手仍然是原来的“跳到该带并连续预览”,
   单击(没有变成拖动)的行为在两种情况下都保持不变。可用

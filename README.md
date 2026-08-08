@@ -128,10 +128,22 @@ cp target/release/simpleminimap-daemon lib/
 
 ```vim
 <Plug>(simpleminimap-toggle)
+<Plug>(simpleminimap-open)
+<Plug>(simpleminimap-close)
 <Plug>(simpleminimap-focus)
 <Plug>(simpleminimap-pin)         " 幂等锁定
+<Plug>(simpleminimap-unpin)
 <Plug>(simpleminimap-toggle-pin)  " 切换锁定状态
+<Plug>(simpleminimap-refresh)
+<Plug>(simpleminimap-refresh-all) " 等价于 :SimpleMinimapRefresh!
+<Plug>(simpleminimap-style)
+<Plug>(simpleminimap-restart)
+<Plug>(simpleminimap-health)
+<Plug>(simpleminimap-log)
 ```
+
+每条命令都有对应的 `<Plug>` 目标：关掉默认映射后不必再手写
+`<Cmd>SimpleMinimap...<CR>` 字面量。
 
 例如：
 
