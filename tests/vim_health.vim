@@ -102,6 +102,56 @@ let $SIMPLEMINIMAP_TEST_PROTOCOL = ''
 SimpleMinimapClose
 call simpleminimap#Stop()
 
+" A daemon rebuilt in place keeps its path.  A version probe cached by path
+" alone therefore reports the version the session started with for the rest of
+" the session -- including immediately after the ./install.sh that Health and
+" the backend error string both tell the user to run.
+function! s:WaitForVersion(expected) abort
+  let l:attempt = 0
+  while simpleminimap#DebugStatus().daemon_version !~# a:expected && l:attempt < 200
+    sleep 20m
+    let l:attempt += 1
+  endwhile
+  return simpleminimap#DebugStatus().daemon_version
+endfunction
+
+let s:probe = s:root .. '/tests/vim-version-probe.py'
+call writefile(['#!/usr/bin/env python3',
+      \ 'print("simpleminimap-daemon 0.1.0-OLD")'], s:probe)
+call setfperm(s:probe, 'rwxr-xr-x')
+let g:simpleminimap_daemon_path = s:probe
+
+silent SimpleMinimapHealth
+call assert_equal('simpleminimap-daemon 0.1.0-OLD', s:WaitForVersion('OLD'),
+      \ 'the first probe reports the installed daemon')
+
+" Rewriting the binary at the same path is exactly what install.sh does.  The
+" mtime and the size both move, so the cached probe must be discarded.
+call writefile(['#!/usr/bin/env python3',
+      \ 'print("simpleminimap-daemon 0.9.9-REBUILT-IN-PLACE")'], s:probe)
+call setfperm(s:probe, 'rwxr-xr-x')
+
+silent SimpleMinimapHealth
+call assert_equal('simpleminimap-daemon 0.9.9-REBUILT-IN-PLACE',
+      \ s:WaitForVersion('REBUILT'),
+      \ 'a daemon rebuilt in place is re-probed instead of reported from cache')
+
+redir => s:health
+silent SimpleMinimapHealth
+redir END
+call assert_match('daemon version: simpleminimap-daemon 0.9.9-REBUILT-IN-PLACE',
+      \ s:health, 'Health prints the rebuilt version, not the cached one')
+call assert_notmatch('0\.1\.0-OLD', s:health)
+
+" :SimpleMinimapRestart is the documented remedy, so it drops the cache too --
+" that covers a g:simpleminimap_daemon_path repointed at a different build the
+" stamp alone cannot tell apart.
+call simpleminimap#Stop()
+call assert_equal('', simpleminimap#DebugStatus().daemon_version,
+      \ 'stopping the backend forgets the probed daemon version')
+
+call delete(s:probe)
+
 if len(v:errors)
   call writefile(v:errors, s:root .. '/tests/vim-errors.log')
   cquit

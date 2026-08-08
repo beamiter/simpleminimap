@@ -69,6 +69,13 @@ All notable changes to SimpleMinimap are documented here.
   候选(`g:simpleminimap_widht` → `g:simpleminimap_width`)。此前拼错的选项会被永远
   静默忽略。已知选项表由 `tests/vim_health.vim` 与 `plugin/simpleminimap.vim` 实际
   归一化的名字比对,不会漂移。
+- `daemon --version` 的探测结果此前只按路径缓存,而且没有任何路径会清掉它。
+  `./install.sh` 恰恰是把新 daemon 覆盖写回同一个路径,于是 Health 在整个会话里
+  一直报旧版本——包括它自己刚刚让你去做的那次重建之后,`:SimpleMinimapRestart`
+  也不管用。现在缓存键是二进制的身份(路径 + mtime + 大小),原地重建即失效;
+  `StopBackend()`(也就是 `:SimpleMinimapRestart` 与 `simpleminimap#Stop()`)
+  另外会无条件丢弃缓存,以覆盖“把 `g:simpleminimap_daemon_path` 指向另一个同龄
+  同大小的构建”这种 stamp 分辨不出的情况。
 
 ### 构建与 CI 修复
 

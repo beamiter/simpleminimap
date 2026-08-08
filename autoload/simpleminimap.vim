@@ -62,8 +62,11 @@ var consecutive_timeouts = 0
 var backend_protocol = 0
 # `daemon --version` is probed with a job, never system(): a daemon hung on a
 # slow or unresponsive filesystem would otherwise freeze Vim inside the very
-# command you run to diagnose a hang.  Keyed by path so a rebuilt or
-# reconfigured daemon is re-probed.
+# command you run to diagnose a hang.  Keyed by the binary's identity -- path,
+# mtime and size -- not by the path alone: ./install.sh rewrites the daemon in
+# place, so a path-keyed cache keeps reporting the version the session started
+# with for ever, including right after the rebuild :SimpleMinimapHealth itself
+# told the user to perform.
 var daemon_version_probed = ''
 var daemon_version = ''
 var daemon_version_job: any = v:null
@@ -555,16 +558,56 @@ def DaemonVersionOut(_channel: channel, message: string)
 enddef
 
 
-def DaemonVersionExit(_job: job, _status: number)
+def DaemonVersionExit(exited_job: job, _status: number)
+  # A re-probe can start before the previous probe's exit callback arrives;
+  # clearing the handle unconditionally would then hide the live job and make
+  # Health report "not probed yet" while a probe is in flight.
+  if type(daemon_version_job) != v:t_job || daemon_version_job == exited_job
+    daemon_version_job = v:null
+  endif
+enddef
+
+
+# What "the same daemon" means for the version cache.  getftime()/getfsize()
+# both change when install.sh drops a freshly built binary over the old one,
+# and either alone can miss it: mtime has one-second resolution, and a rebuild
+# of unchanged sources can keep the size.
+def DaemonStamp(path: string): string
+  return printf('%s|%d|%d', path, getftime(path), getfsize(path))
+enddef
+
+
+def ForgetDaemonVersion()
+  daemon_version_probed = ''
+  daemon_version = ''
+  if type(daemon_version_job) == v:t_job
+    try
+      job_stop(daemon_version_job)
+    catch
+    endtry
+  endif
   daemon_version_job = v:null
 enddef
 
 
 def ProbeDaemonVersion(path: string)
-  if path ==# '' || daemon_version_probed ==# path
+  if path ==# ''
     return
   endif
-  daemon_version_probed = path
+  var stamp = DaemonStamp(path)
+  if daemon_version_probed ==# stamp
+    return
+  endif
+  # DaemonVersionOut() keeps the first answer it sees, so a probe still in
+  # flight for the previous binary would otherwise win the race and reinstate
+  # the stale version this call exists to replace.
+  if type(daemon_version_job) == v:t_job
+    try
+      job_stop(daemon_version_job)
+    catch
+    endtry
+  endif
+  daemon_version_probed = stamp
   daemon_version = ''
   try
     daemon_version_job = job_start([path, '--version'], {
@@ -648,6 +691,12 @@ def StopBackend(restart: bool = false)
   requests = {}
   incoming = {}
   StopAllRequestTimers()
+  # :SimpleMinimapRestart is the documented remedy for a stale daemon, so it
+  # has to invalidate what we believe about the binary too -- the stamp check
+  # in ProbeDaemonVersion() covers a rebuild in place, but not a
+  # g:simpleminimap_daemon_path repointed at a different build of the same age
+  # and size.
+  ForgetDaemonVersion()
   if BackendRunning()
     try
       job_stop(backend_job)
