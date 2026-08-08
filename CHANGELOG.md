@@ -47,6 +47,17 @@ All notable changes to SimpleMinimap are documented here.
   每个 sign 上都要调用一次,带 4000 个 git sign 的文件每次 `CursorHold` 要做
   约 24 万次比较。`UpdateSigns()` 同时在所有行都升到最高严重级时提前退出。
 
+### 构建与 CI 修复
+
+- CI 的 msrv 作业固定在 `dtolnay/rust-toolchain@1.85.0`,而 `Cargo.toml` 声明的是
+  `rust-version = "1.88"`。cargo 把“声明的 rust-version 高于当前工具链”当硬错误,
+  所以该作业每次 push 都在编译前失败。现在工具链版本直接从 `Cargo.toml` 里读出来,
+  两者不可能再漂移。
+- CI 不再手写一份步骤清单,改为只跑 `make check`。手写清单正是
+  `make core-verify`(vendored bundle 的 sha256 校验)一直没进 CI 的原因;新增的
+  `tests/vim_scroll.vim`、`tests/vim_projection.vim`、`tests/vim_timeout.vim`
+  也随之自动纳入。Makefile 现在是门禁的唯一定义处。
+
 ### 新增
 
 - 视口拖拽:按住左键从视口高亮带内起手,拖动的是视口本身——minimap 直接当滚动条
