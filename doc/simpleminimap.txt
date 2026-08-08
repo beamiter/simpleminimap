@@ -345,6 +345,29 @@ All options must be set before the plugin is loaded.
         dense cells |SimpleMinimapShadeHigh|.  Requires +textprop; silently
         disabled otherwise.
 
+*g:simpleminimap_colors*
+        Boolean number, default 0.  Colour rendered cells by syntax class as
+        well as by density, so a comment block, a string table and code are
+        told apart at a glance instead of all reading as "some ink".
+
+        Every sampled line is classified by the syntax item at its first
+        non-blank column, folded into one of comment, string, keyword, type or
+        none.  The daemon gives each rendered cell the class that put the most
+        ink into it, and the frontend paints that class:
+        |SimpleMinimapSynComment|, |SimpleMinimapSynString|,
+        |SimpleMinimapSynKeyword| or |SimpleMinimapSynType|.  A cell whose ink
+        is plain code keeps its density shade, so brightness still carries
+        where there is no hue to show.
+
+        Requires +syntax and |g:simpleminimap_shading| -- text properties are
+        how the colour is applied -- and |:SimpleMinimapHealth| says which one
+        is missing.  The cost is one syntax lookup per sampled line, at most
+        four per minimap row, and classes are cached alongside the sampled
+        text.  Syntax state propagates forward, so an edit drops the
+        classification of every band below it and keeps the bands above it;
+        editing near the top of a file therefore re-classifies most of the
+        minimap.  That is why this is off by default.
+
 *g:simpleminimap_ignore_filetypes*
         List of strings, default empty.  Windows whose buffer 'filetype' is in
         the list are not eligible source windows.
@@ -433,6 +456,14 @@ All options must be set before the plugin is loaded.
 *SimpleMinimapShadeLow*     Sparse density cells.  Defaults to NonText.
 *SimpleMinimapShadeMid*     Average density cells.  Defaults to Comment.
 *SimpleMinimapShadeHigh*    Dense cells.  Defaults to Normal.
+*SimpleMinimapSynComment*   Cells inked by comments, with
+                            |g:simpleminimap_colors|.  Defaults to Comment.
+*SimpleMinimapSynString*    Cells inked by strings and other literals.
+                            Defaults to String.
+*SimpleMinimapSynKeyword*   Cells inked by keywords and preprocessor lines.
+                            Defaults to Statement.
+*SimpleMinimapSynType*      Cells inked by type and identifier declarations.
+                            Defaults to Type.
 *SimpleMinimapTitle*        Statusline title.  Defaults to Title.
 
 The defaults are recreated after |ColorScheme|.  Define the groups in your own
@@ -473,11 +504,12 @@ Sign and search projection are overlays implemented with |matchaddpos()| in
 the minimap window; they never modify the rendered text and are recomputed
 lazily from cached state on cursor movement and |CursorHold|.
 
-With protocol version 2 the daemon reports one density digit per rendered
-cell alongside each row.  Vim converts contiguous runs of equal density into
-text properties so that dense code appears brighter than sparse code.  The
-minimap statusline additionally shows the cursor position as a percentage of
-the source buffer.
+The daemon reports one density digit per rendered cell alongside each row, and
+since protocol version 3 one syntax class per cell beside it.  Vim converts
+contiguous runs into text properties so that dense code appears brighter than
+sparse code and, with |g:simpleminimap_colors|, comments and strings appear in
+their own colour rather than as undifferentiated ink.  The minimap statusline
+additionally shows the cursor position as a percentage of the source buffer.
 
 ==============================================================================
 8. TROUBLESHOOTING                             *simpleminimap-troubleshooting*

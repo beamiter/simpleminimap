@@ -2,7 +2,7 @@
 import os
 import sys
 
-PROTOCOL = 2
+PROTOCOL = 3
 
 
 def encode(value: str) -> str:
@@ -78,7 +78,12 @@ for raw in sys.stdin:
             'groups': [],
         }
     elif command == 'G' and pending is not None:
-        pending['groups'].append((int(fields[2]), int(fields[3])))
+        # Field 8 is the per-sample syntax class.  The mock draws synthetic
+        # text, so it cannot work out which sample inked which cell -- it
+        # reports the first sample's class for the whole row, which is enough
+        # for a test to prove the class survives the round trip.
+        classes = fields[8] if len(fields) > 8 and fields[8] else 'nnnn'
+        pending['groups'].append((int(fields[2]), int(fields[3]), classes[0]))
     elif command == 'E' and pending is not None:
         request_id = int(fields[1])
         if request_id != pending['id']:
@@ -86,11 +91,12 @@ for raw in sys.stdin:
             pending = None
             continue
         emit(f'B\t{request_id}\t{pending["source_lines"]}\t{len(pending["groups"])}')
-        for index, (start, end) in enumerate(pending['groups']):
+        for index, (start, end, sample_class) in enumerate(pending['groups']):
             marker = str((index + 1) % 10)
             text = marker * pending['width']
             shade = '2' * pending['width']
-            emit(f'R\t{request_id}\t{start}\t{end}\t{encode(text)}\t{shade}')
+            classes = sample_class * pending['width']
+            emit(f'R\t{request_id}\t{start}\t{end}\t{encode(text)}\t{shade}\t{classes}')
         emit(f'E\t{request_id}')
         if crash_after_render:
             sys.exit(23)

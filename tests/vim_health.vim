@@ -85,7 +85,10 @@ call assert_match('out of date',
 redir => s:health
 silent SimpleMinimapHealth
 redir END
-call assert_match('\[FAIL\] daemon protocol: daemon v1, plugin expects v2', s:health)
+call assert_match(
+      \ printf('\[FAIL\] daemon protocol: daemon v1, plugin expects v%d',
+      \        simpleminimap#DebugStatus().protocol_version),
+      \ s:health)
 call assert_match('install\.sh', s:health)
 
 " The version probe runs as a job and lands in Health without blocking it.

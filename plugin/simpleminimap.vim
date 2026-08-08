@@ -75,6 +75,10 @@ g:simpleminimap_show_statusline = Flag(get(g:, 'simpleminimap_show_statusline', 
 g:simpleminimap_show_signs = Flag(get(g:, 'simpleminimap_show_signs', 1), 1)
 g:simpleminimap_show_search = Flag(get(g:, 'simpleminimap_show_search', 1), 1)
 g:simpleminimap_shading = Flag(get(g:, 'simpleminimap_shading', 1), 1)
+# Off by default: colouring costs one syntax lookup per sampled line, and an
+# edit near the top of the file re-classifies every band below it, so it is not
+# something to spend on a user who never asked for it.
+g:simpleminimap_colors = Flag(get(g:, 'simpleminimap_colors', 0), 0)
 g:simpleminimap_incremental = Flag(get(g:, 'simpleminimap_incremental', 1), 1)
 g:simpleminimap_auto_close = Flag(get(g:, 'simpleminimap_auto_close', 0), 0)
 g:simpleminimap_auto_open = Flag(get(g:, 'simpleminimap_auto_open', 0), 0)

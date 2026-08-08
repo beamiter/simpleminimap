@@ -1,6 +1,6 @@
 vim9script
 
-const PROTOCOL_VERSION = 2
+const PROTOCOL_VERSION = 3
 const MIN_RENDER_HEIGHT = 1
 const MAX_BACKEND_RESTARTS = 3
 const RESTART_WINDOW_MS = 60000.0
@@ -44,6 +44,26 @@ const SHADE_TYPES = {
   '2': 'SimpleMinimapShadeMid',
   '3': 'SimpleMinimapShadeHigh',
 }
+# Syntax classes reported per rendered cell by the daemon.  Density alone
+# cannot tell a comment block from a string table from code, which is the main
+# reason a terminal minimap reads worse than the editor's own; these carry the
+# hue while SHADE_TYPES carries the brightness.  'n' is deliberately absent:
+# an unclassified cell keeps its density shade.
+const SYNTAX_TYPES = {
+  c: 'SimpleMinimapSynComment',
+  s: 'SimpleMinimapSynString',
+  k: 'SimpleMinimapSynKeyword',
+  t: 'SimpleMinimapSynType',
+}
+# Every rendered cell carries one of these, so anything else on the wire is a
+# protocol violation rather than a cell to leave alone.
+const SYNTAX_CLASSES = 'csktn'
+# Classifying a line costs one synID() lookup, and Vim may have to parse the
+# buffer forward from a sync point to answer it.  The number of sampled lines
+# is already bounded by the window height (4 per row), but a 2000-row minimap
+# on a huge file would still ask for 8000 of them in one pass; anything past
+# this budget renders unclassified rather than stalling the render.
+const SYNTAX_MAX_PROBE_LINES = 2000
 var plugin_root = fnamemodify(expand('<sfile>:p'), ':h:h')
 
 # key (minimap window ID as string) -> session dictionary.
@@ -444,7 +464,7 @@ def BackendOut(_channel: channel, message: string)
       rows: [],
     }
   elseif fields[0] ==# 'R'
-    if len(fields) != 6 || !has_key(incoming, request_key)
+    if len(fields) != 7 || !has_key(incoming, request_key)
       RejectResponse(request_key, 'row without a valid response header')
       return
     endif
@@ -458,6 +478,7 @@ def BackendOut(_channel: channel, message: string)
     var expected_start = empty(response.rows) ? 1 : response.rows[-1].end + 1
     var text = DecodeField(fields[4])
     var shade = fields[5]
+    var classes = fields[6]
     if start_line != expected_start || end_line < start_line || end_line > response.source_lines
       RejectResponse(request_key, 'non-contiguous response row range')
       return
@@ -470,7 +491,17 @@ def BackendOut(_channel: channel, message: string)
       RejectResponse(request_key, 'malformed response shade data')
       return
     endif
-    response.rows->add({start: start_line, end: end_line, text: text, shade: shade})
+    if classes !~# printf('^[%s]\+$', SYNTAX_CLASSES) || strlen(classes) != strchars(text)
+      RejectResponse(request_key, 'malformed response class data')
+      return
+    endif
+    response.rows->add({
+      start: start_line,
+      end: end_line,
+      text: text,
+      shade: shade,
+      classes: classes,
+    })
   elseif fields[0] ==# 'E'
     if len(fields) != 2 || !has_key(incoming, request_key)
       RejectResponse(request_key, 'render end without a valid response')
@@ -897,14 +928,26 @@ def InkScore(text: string): number
 enddef
 
 
-def RepresentativeSample(bufnr: number, start_line: number, end_line: number, max_chars: number, tabstop: number): string
+# A sample is {text, lnum, class}: the normalised text the daemon draws, the
+# source line it came from, and that line's syntax class.  The line number has
+# to travel with the text because the class is resolved later, in one pass
+# inside the source window -- synID() only ever answers for the current one.
+# An empty slot (a band with fewer than four lines) has lnum 0 and is never
+# classified.
+def EmptySample(): dict<any>
+  return {text: '', lnum: 0, class: 'n'}
+enddef
+
+
+def RepresentativeSample(bufnr: number, start_line: number, end_line: number, max_chars: number, tabstop: number): dict<any>
   var midpoint = start_line + ((end_line - start_line) / 2)
   if get(g:, 'simpleminimap_sampling', 'adaptive') !=# 'adaptive' || start_line == end_line
-    return SampleText(bufnr, midpoint, max_chars, tabstop)
+    return {text: SampleText(bufnr, midpoint, max_chars, tabstop), lnum: midpoint, class: ''}
   endif
 
   var candidates = [start_line, midpoint, end_line]
   var best_text = ''
+  var best_line = midpoint
   var best_score = -1
   var best_distance = end_line - start_line + 1
   var visited: dict<bool> = {}
@@ -919,25 +962,30 @@ def RepresentativeSample(bufnr: number, start_line: number, end_line: number, ma
     var distance = abs(line_number - midpoint)
     if score > best_score || (score == best_score && distance < best_distance)
       best_text = text
+      best_line = line_number
       best_score = score
       best_distance = distance
     endif
   endfor
-  return best_text
+  return {text: best_text, lnum: best_line, class: ''}
 enddef
 
 
-def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_chars: number, tabstop: number): list<string>
-  var samples: list<string> = []
+def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_chars: number, tabstop: number): list<dict<any>>
+  var samples: list<dict<any>> = []
   var count = end_line - start_line + 1
   if count <= 4
     var line_number = start_line
     while line_number <= end_line
-      samples->add(SampleText(bufnr, line_number, max_chars, tabstop))
+      samples->add({
+        text: SampleText(bufnr, line_number, max_chars, tabstop),
+        lnum: line_number,
+        class: '',
+      })
       line_number += 1
     endwhile
     while len(samples) < 4
-      samples->add('')
+      samples->add(EmptySample())
     endwhile
     return samples
   endif
@@ -949,6 +997,120 @@ def BuildSampleGroup(bufnr: number, start_line: number, end_line: number, max_ch
     samples->add(RepresentativeSample(bufnr, bucket_start, bucket_end, max_chars, tabstop))
   endfor
   return samples
+enddef
+
+
+# ---------------------------------------------------------------------------
+# Syntax classification.
+#
+# The daemon draws ink density; what it cannot know is what the ink *is*.  One
+# synID() lookup at the first non-blank column of a sampled line folds it into
+# a class the renderer can carry per cell, so a comment block, a string table
+# and code read differently at a glance instead of all being "some ink".
+#
+# The lookup has to run in the source window, so it happens in one batch per
+# render rather than inline with sampling -- and only for samples whose class
+# is not already cached, which is what keeps a keystroke costing four lookups
+# instead of hundreds.
+# ---------------------------------------------------------------------------
+def ColorsEnabled(): bool
+  return get(g:, 'simpleminimap_colors', 0) != 0
+    && has('syntax') == 1
+    && ShadingEnabled()
+enddef
+
+
+# Folded from the *effective* highlight group rather than the syntax item name,
+# so every language lands in the same five buckets without a per-filetype
+# table; the raw item name is still consulted first because "Constant" alone
+# cannot separate a string from a number, and a string is the one people
+# actually want to see.
+def FoldSyntaxName(item: string, linked: string): string
+  if item =~? 'comment\|todo' || linked ==# 'Comment' || linked ==# 'Todo'
+    return 'c'
+  endif
+  if item =~? 'string\|char\|heredoc\|regex\|quote' || linked ==# 'Constant' || linked ==# 'String'
+    return 's'
+  endif
+  if linked ==# 'Statement' || linked ==# 'PreProc' || linked ==# 'Keyword' || linked ==# 'Exception'
+    return 'k'
+  endif
+  if linked ==# 'Type' || linked ==# 'Identifier' || linked ==# 'Special' || linked ==# 'Structure'
+    return 't'
+  endif
+  return 'n'
+enddef
+
+
+# Runs inside the source window through win_execute(); exported so the legacy
+# context it creates can name it, exactly as the diff overlay's probe is.  It
+# is an implementation detail of syntax colouring, not public API.
+export def SyntaxProbe(lines: list<number>): list<string>
+  var result: list<string> = []
+  var last = line('$')
+  for line_number in lines
+    if line_number <= 0 || line_number > last
+      result->add('n')
+      continue
+    endif
+    var column = match(getline(line_number), '\S') + 1
+    if column <= 0
+      result->add('n')
+      continue
+    endif
+    var id = synID(line_number, column, 1)
+    if id == 0
+      result->add('n')
+      continue
+    endif
+    result->add(FoldSyntaxName(synIDattr(id, 'name'), synIDattr(synIDtrans(id), 'name')))
+  endfor
+  return result
+enddef
+
+
+# Fills in the class of every sample that does not have one yet, in a single
+# window switch.  Samples are the dicts held by the cache, so writing the class
+# back here is what makes the next render free.
+def ClassifySamples(winid: number, groups: list<list<dict<any>>>)
+  var pending: list<dict<any>> = []
+  var lines: list<number> = []
+  for samples in groups
+    for sample in samples
+      if sample.class ==# '' && sample.lnum > 0
+        pending->add(sample)
+        lines->add(sample.lnum)
+      endif
+    endfor
+  endfor
+  if empty(pending)
+    return
+  endif
+  if len(lines) > SYNTAX_MAX_PROBE_LINES
+    # Leave the overflow unclassified rather than half-classified at random:
+    # the rows that do get a class are the ones nearest the top of the file,
+    # and the rest fall back to density shading.
+    pending = pending[0 : SYNTAX_MAX_PROBE_LINES - 1]
+    lines = lines[0 : SYNTAX_MAX_PROBE_LINES - 1]
+  endif
+  syntax_probes += len(lines)
+  var decoded: list<any> = []
+  try
+    var raw = win_execute(winid,
+      printf('echo json_encode(simpleminimap#SyntaxProbe(%s))', string(lines)))
+    decoded = json_decode(trim(raw))
+  catch
+    Log('syntax classification failed: ' .. v:exception)
+    return
+  endtry
+  if type(decoded) != v:t_list
+    return
+  endif
+  for index in range(min([len(decoded), len(pending)]))
+    if type(decoded[index]) == v:t_string && stridx(SYNTAX_CLASSES, decoded[index]) >= 0
+      pending[index].class = decoded[index]
+    endif
+  endfor
 enddef
 
 
@@ -974,6 +1136,7 @@ var sample_caches: dict<any> = {}
 var sample_listeners: dict<number> = {}
 var sample_cache_hits = 0
 var sample_cache_misses = 0
+var syntax_probes = 0
 
 def IncrementalEnabled(): bool
   return get(g:, 'simpleminimap_incremental', 1) != 0 && exists('*listener_add')
@@ -996,8 +1159,18 @@ def OnBufferListen(bufnr: number, start: number, end: number, added: number, _ch
   var entries = sample_caches[key].entries
   for entry_key in keys(entries)
     var bounds = split(entry_key, ':')
-    if str2nr(bounds[0]) < end && str2nr(bounds[1]) >= start
+    var band_start = str2nr(bounds[0])
+    var band_end = str2nr(bounds[1])
+    if band_start < end && band_end >= start
       entries->remove(entry_key)
+    elseif band_end >= start
+      # The text of a band below the edit is untouched, but its *syntax* is
+      # not: typing `/*` opens a comment that runs to the end of the file.
+      # Syntax state only ever propagates forward, so drop the classification
+      # of everything below the change and keep the sampled text.
+      for sample in entries[entry_key]
+        sample.class = sample.lnum > 0 ? '' : 'n'
+      endfor
     endif
   endfor
 enddef
@@ -1066,6 +1239,10 @@ export def SampleCacheStats(): dict<number>
     hits: sample_cache_hits,
     misses: sample_cache_misses,
     buffers: len(sample_listeners),
+    # Lines handed to synID() since startup.  This is the cost syntax
+    # colouring adds, so it is also the only way to see that a cached class
+    # was reused rather than re-derived.
+    classified: syntax_probes,
   }
 enddef
 
@@ -1129,14 +1306,15 @@ def BuildRequestBody(key: string): dict<any>
     endif
   endif
 
-  var groups: list<string> = []
+  var bands: list<list<number>> = []
+  var sample_groups: list<list<dict<any>>> = []
   for row_index in range(0, row_count - 1)
     var start_zero = (row_index * source_lines) / row_count
     var end_zero = (((row_index + 1) * source_lines) / row_count) - 1
     var start_line = start_zero + 1
     var end_line = max([start_line, end_zero + 1])
     var cache_key = printf('%d:%d', start_line, end_line)
-    var samples: list<string>
+    var samples: list<dict<any>>
     if incremental && has_key(entries, cache_key)
       samples = entries[cache_key]
       sample_cache_hits += 1
@@ -1147,9 +1325,28 @@ def BuildRequestBody(key: string): dict<any>
         entries[cache_key] = samples
       endif
     endif
-    groups->add(printf("%d\t%d\t%s\t%s\t%s\t%s",
-      start_line, end_line,
-      EncodeField(samples[0]), EncodeField(samples[1]), EncodeField(samples[2]), EncodeField(samples[3])))
+    bands->add([start_line, end_line])
+    sample_groups->add(samples)
+  endfor
+
+  if ColorsEnabled()
+    ClassifySamples(session.source_winid, sample_groups)
+  endif
+
+  var groups: list<string> = []
+  for index in range(len(bands))
+    var samples = sample_groups[index]
+    var classes = ''
+    for sample in samples
+      # An unresolved class is `n` on the wire: the daemon's field is
+      # fixed-width so that turning colouring on and off never changes the
+      # record shape, only what the cells say.
+      classes ..= sample.class ==# '' ? 'n' : sample.class
+    endfor
+    groups->add(printf("%d\t%d\t%s\t%s\t%s\t%s\t%s",
+      bands[index][0], bands[index][1],
+      EncodeField(samples[0].text), EncodeField(samples[1].text),
+      EncodeField(samples[2].text), EncodeField(samples[3].text), classes))
   endfor
   return {
     width: width,
@@ -1372,8 +1569,16 @@ def ShadingEnabled(): bool
 enddef
 
 
+# Every property type the rendered rows can carry.  Shade and syntax types are
+# added and removed together so that toggling g:simpleminimap_colors cannot
+# leave a stale hue behind on a row the next render only reshades.
+def CellPropTypes(): list<string>
+  return values(SHADE_TYPES) + values(SYNTAX_TYPES)
+enddef
+
+
 def EnsureShadeProps()
-  for type_name in values(SHADE_TYPES)
+  for type_name in CellPropTypes()
     if empty(prop_type_get(type_name))
       prop_type_add(type_name, {highlight: type_name})
     endif
@@ -1389,7 +1594,7 @@ def ClearShading(key: string)
   if !bufexists(session.bufnr)
     return
   endif
-  for type_name in values(SHADE_TYPES)
+  for type_name in CellPropTypes()
     if !empty(prop_type_get(type_name))
       try
         prop_remove({type: type_name, bufnr: session.bufnr, all: true}, 1, max([1, get(getbufinfo(session.bufnr)[0], 'linecount', 1)]))
@@ -1397,6 +1602,21 @@ def ClearShading(key: string)
       endtry
     endif
   endfor
+enddef
+
+
+# Hue wins over brightness where there is a hue to show: a cell whose ink came
+# from a comment is drawn as a comment however dense it is, and a cell of plain
+# code -- class `n` -- keeps the density shade it always had.  Only one text
+# property can decide the colour of a cell, so this is a choice, not a blend.
+def CellPropType(shade: string, class: string): string
+  if shade ==# '0' || shade ==# ''
+    return ''
+  endif
+  if has_key(SYNTAX_TYPES, class)
+    return SYNTAX_TYPES[class]
+  endif
+  return get(SHADE_TYPES, shade, '')
 enddef
 
 
@@ -1410,6 +1630,7 @@ def ApplyShading(key: string, output: list<string>)
   endif
   EnsureShadeProps()
   ClearShading(key)
+  var colored = ColorsEnabled()
   var lnum = 0
   for row in session.rows
     lnum += 1
@@ -1418,16 +1639,17 @@ def ApplyShading(key: string, output: list<string>)
     endif
     var text = output[lnum - 1]
     var shade = get(row, 'shade', '')
+    var classes = colored ? get(row, 'classes', '') : ''
     var limit = min([strlen(shade), strchars(text)])
     var cell = 0
     while cell < limit
-      var class = shade[cell]
-      if class ==# '0'
+      var type_name = CellPropType(shade[cell], classes[cell])
+      if type_name ==# ''
         cell += 1
         continue
       endif
       var run_start = cell
-      while cell < limit && shade[cell] ==# class
+      while cell < limit && CellPropType(shade[cell], classes[cell]) ==# type_name
         cell += 1
       endwhile
       var byte_start = byteidx(text, run_start)
@@ -1436,7 +1658,7 @@ def ApplyShading(key: string, output: list<string>)
         try
           prop_add(lnum, byte_start + 1, {
             length: byte_end - byte_start,
-            type: SHADE_TYPES[class],
+            type: type_name,
             bufnr: session.bufnr,
           })
         catch
@@ -2368,6 +2590,12 @@ export def SetupHighlights()
   highlight default link SimpleMinimapShadeLow NonText
   highlight default link SimpleMinimapShadeMid Comment
   highlight default link SimpleMinimapShadeHigh Normal
+  # Linked to the groups they stand for, so the minimap picks up the colour
+  # scheme's own idea of a comment or a string without any configuration.
+  highlight default link SimpleMinimapSynComment Comment
+  highlight default link SimpleMinimapSynString String
+  highlight default link SimpleMinimapSynKeyword Statement
+  highlight default link SimpleMinimapSynType Type
   highlight default link SimpleMinimapTitle Title
 enddef
 
@@ -3187,6 +3415,7 @@ const KNOWN_OPTIONS = [
   'simpleminimap_auto_close',
   'simpleminimap_auto_open',
   'simpleminimap_auto_restart',
+  'simpleminimap_colors',
   'simpleminimap_daemon_path',
   'simpleminimap_debounce',
   'simpleminimap_debug',
@@ -3279,6 +3508,12 @@ export def Health()
     printf('[INFO] backend latency: %s', backend_latency_ms >= 0.0 ? printf('%.1fms', backend_latency_ms) : 'n/a'),
     printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
     printf('[%s] density shading: %s', ShadingEnabled() ? 'OK' : 'INFO', ShadingEnabled() ? 'enabled' : (has('textprop') == 1 ? 'disabled by g:simpleminimap_shading' : 'needs +textprop')),
+    printf('[%s] syntax colours: %s', ColorsEnabled() ? 'OK' : 'INFO',
+      ColorsEnabled()
+        ? 'enabled'
+        : (get(g:, 'simpleminimap_colors', 0) == 0
+            ? 'disabled by g:simpleminimap_colors'
+            : (has('syntax') == 0 ? 'needs +syntax' : 'needs density shading'))),
     printf('[INFO] sessions: %d, pending requests: %d', len(sessions), len(requests)),
     printf('[%s] incremental sampling: %s', IncrementalEnabled() ? 'OK' : 'INFO',
       IncrementalEnabled()
@@ -3344,6 +3579,9 @@ export def DebugStatus(): dict<any>
     backend_breaker_reason: backend_breaker_reason,
     backend_timeouts: backend_timeouts,
     backend_protocol: backend_protocol,
+    # The version this plugin speaks, so a test can assert the skew report
+    # without hardcoding a number that goes stale on the next protocol bump.
+    protocol_version: PROTOCOL_VERSION,
     daemon_version: daemon_version,
     unknown_options: UnknownOptions(),
     sample_cache: SampleCacheStats(),

@@ -100,6 +100,24 @@ All notable changes to SimpleMinimap are documented here.
 
 ### 新增
 
+- 按语法类别着色(`g:simpleminimap_colors`,默认 `0`)。此前 minimap 只有密度一个
+  维度:注释块、字符串表和代码在概览里都只是“一片墨”,而“一眼看出哪里是注释、
+  哪里是字符串”正是终端 minimap 与编辑器本身差距最大的地方。现在每条样本行按
+  首个非空白列的语法项归入 注释 / 字符串 / 关键字 / 类型 / 无 五类之一(取
+  `synIDtrans()` 后的高亮组,因此不需要逐语言的映射表),协议升到 v3:`G` 记录多
+  一个 4 字符的类别字段,`R` 记录多一个逐单元格的类别字段——后台把一个单元格判给
+  在其中留下墨点最多的类别,同分时取更具体的一类。前端用 text property 上色:
+  有类别的单元格用 `SimpleMinimapSyn{Comment,String,Keyword,Type}`(默认分别链接
+  `Comment` / `String` / `Statement` / `Type`),纯代码单元格仍然按密度分档,所以
+  亮度这一维没有丢。代价是每条样本行一次 `synID()`(每行 minimap 最多 4 次),
+  类别与采样文本一起缓存;语法状态只会向后传播,因此一次编辑会丢弃它*下方*所有
+  区间的类别而保留上方的——在文件顶部打字会重新分类大半个 minimap,这也是它默认
+  关闭的原因。需要 `+syntax` 与 `g:simpleminimap_shading`,
+  `:SimpleMinimapHealth` 会说明缺哪一个。
+- `simpleminimap#DebugStatus()` 增加 `protocol_version`(本插件说的协议版本),
+  `simpleminimap#SampleCacheStats()` 增加 `classified`(至今送进 `synID()` 的行数)。
+  前者让版本漂移的断言不必再硬编码一个下次升协议就过期的数字,后者让“这个类别是
+  复用的还是重新推导的”可被观测——分类缓存的失效规则就是靠它测的。
 - 叠加层(overlay)提供者注册表 `simpleminimap#RegisterOverlay()`,以及在它之上的
   quickfix / location list / marks / diff 四个内置投影。此前 minimap 只能显示
   *别的插件已经放成 Vim sign* 的东西:`:grep` 结果、位置列表、`'a`-`'z` 标记、

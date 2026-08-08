@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-fill test-vim-popup test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-health test-vim-doc test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-fill test-vim-popup test-vim-timeout test-vim-health test-vim-doc test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-health test-vim-doc test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -57,6 +57,12 @@ test-vim-overlays:
 # taller than the minimap.
 test-vim-incremental:
 	vim -Nu NONE -n -es -S tests/vim_incremental.vim
+
+# Syntax classification needs a real syntax-highlighted buffer of a known
+# filetype, which no other fixture here has, and g:simpleminimap_fill is pinned
+# to 'compact' so band boundaries are predictable enough to assert per row.
+test-vim-colors:
+	vim -Nu NONE -n -es -S tests/vim_colors.vim
 
 # Row count and the blank tail below it, which only differ when the file is
 # shorter than the minimap window is tall.

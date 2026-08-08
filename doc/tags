@@ -30,11 +30,16 @@ SimpleMinimapSignDelete	simpleminimap.txt	/*SimpleMinimapSignDelete*
 SimpleMinimapSignError	simpleminimap.txt	/*SimpleMinimapSignError*
 SimpleMinimapSignInfo	simpleminimap.txt	/*SimpleMinimapSignInfo*
 SimpleMinimapSignWarning	simpleminimap.txt	/*SimpleMinimapSignWarning*
+SimpleMinimapSynComment	simpleminimap.txt	/*SimpleMinimapSynComment*
+SimpleMinimapSynKeyword	simpleminimap.txt	/*SimpleMinimapSynKeyword*
+SimpleMinimapSynString	simpleminimap.txt	/*SimpleMinimapSynString*
+SimpleMinimapSynType	simpleminimap.txt	/*SimpleMinimapSynType*
 SimpleMinimapTitle	simpleminimap.txt	/*SimpleMinimapTitle*
 SimpleMinimapViewport	simpleminimap.txt	/*SimpleMinimapViewport*
 g:simpleminimap_auto_close	simpleminimap.txt	/*g:simpleminimap_auto_close*
 g:simpleminimap_auto_open	simpleminimap.txt	/*g:simpleminimap_auto_open*
 g:simpleminimap_auto_restart	simpleminimap.txt	/*g:simpleminimap_auto_restart*
+g:simpleminimap_colors	simpleminimap.txt	/*g:simpleminimap_colors*
 g:simpleminimap_daemon_path	simpleminimap.txt	/*g:simpleminimap_daemon_path*
 g:simpleminimap_debounce	simpleminimap.txt	/*g:simpleminimap_debounce*
 g:simpleminimap_debug	simpleminimap.txt	/*g:simpleminimap_debug*

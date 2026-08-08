@@ -1,7 +1,7 @@
 use std::env;
 use std::io::{self, BufRead, Write};
 
-const PROTOCOL_VERSION: u32 = 2;
+const PROTOCOL_VERSION: u32 = 3;
 const MAX_WIDTH: usize = 256;
 const MAX_HEIGHT: usize = 2_000;
 const MAX_COLUMNS: usize = 1_000;
@@ -9,11 +9,22 @@ const MAX_GROUPS: usize = 2_000;
 const MAX_SOURCE_LINES: usize = 100_000_000;
 const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 
+// Syntax classes a sampled line can carry, most specific first: comment,
+// string/literal, keyword, type, none.  The order is also the tie-break when
+// two classes contribute the same number of dots to one rendered cell -- a
+// comment sharing a cell with plain code should read as a comment, because
+// that is the distinction the colour exists to draw.
+const CLASS_ORDER: [u8; 5] = [b'c', b's', b'k', b't', b'n'];
+const CLASS_NONE: u8 = b'n';
+
 #[derive(Debug)]
 struct SampleGroup {
     start: usize,
     end: usize,
     samples: [String; 4],
+    // One class byte per sample line.  The frontend sends `nnnn` when syntax
+    // colouring is off, so the field count never varies with the option.
+    classes: [u8; 4],
 }
 
 #[derive(Debug)]
@@ -327,10 +338,10 @@ fn parse_begin(fields: &[&str]) -> Result<RenderRequest, (u64, String)> {
 
 fn parse_group(fields: &[&str], pending: Option<&mut RenderRequest>) -> Result<(), (u64, String)> {
     let id = parse_u64(fields, 1, 0, "request ID")?;
-    if fields.len() != 8 {
+    if fields.len() != 9 {
         return Err((
             id,
-            format!("sample group expects 8 fields, got {}", fields.len()),
+            format!("sample group expects 9 fields, got {}", fields.len()),
         ));
     }
     let Some(request) = pending else {
@@ -378,12 +389,32 @@ fn parse_group(fields: &[&str], pending: Option<&mut RenderRequest>) -> Result<(
             "sample exceeds the declared maximum column count".to_string(),
         ));
     }
+    let classes = parse_classes(fields[8]).map_err(|message| (id, message))?;
     request.groups.push(SampleGroup {
         start,
         end,
         samples,
+        classes,
     });
     Ok(())
+}
+
+// The class field is fixed-width and drawn from a closed alphabet, so it needs
+// no escaping and no length negotiation -- reject anything else outright
+// rather than silently colouring by a byte the renderer does not know.
+fn parse_classes(field: &str) -> Result<[u8; 4], String> {
+    let bytes = field.as_bytes();
+    if bytes.len() != 4 {
+        return Err("sample class field must be exactly 4 characters".to_string());
+    }
+    let mut classes = [CLASS_NONE; 4];
+    for (slot, byte) in classes.iter_mut().zip(bytes.iter()) {
+        if !CLASS_ORDER.contains(byte) {
+            return Err("sample class field has an unknown class".to_string());
+        }
+        *slot = *byte;
+    }
+    Ok(classes)
 }
 
 fn parse_u64(
@@ -412,6 +443,10 @@ struct RenderedRow {
     // One ASCII digit per rendered cell classifying its ink density,
     // used by the frontend for brightness shading: 0 empty, 1..3 dense.
     shade: String,
+    // One class byte per rendered cell, from CLASS_ORDER: the class of the
+    // sample lines that put the most ink in that cell.  Density gives the
+    // frontend brightness, this gives it hue.
+    classes: String,
 }
 
 fn render_and_write<W: Write>(out: &mut W, request: RenderRequest) -> Result<(), String> {
@@ -427,12 +462,13 @@ fn render_and_write<W: Write>(out: &mut W, request: RenderRequest) -> Result<(),
     for (group, row) in request.groups.iter().zip(rows.iter()) {
         writeln!(
             out,
-            "R\t{}\t{}\t{}\t{}\t{}",
+            "R\t{}\t{}\t{}\t{}\t{}\t{}",
             request.id,
             group.start,
             group.end,
             encode_field(&row.text),
-            row.shade
+            row.shade,
+            row.classes
         )
         .map_err(|e| e.to_string())?;
     }
@@ -463,7 +499,16 @@ fn render(request: &RenderRequest) -> Vec<RenderedRow> {
 
     prepared
         .iter()
-        .map(|sample_rows| render_row(sample_rows, request.width, scale, request.style))
+        .zip(request.groups.iter())
+        .map(|(sample_rows, group)| {
+            render_row(
+                sample_rows,
+                &group.classes,
+                request.width,
+                scale,
+                request.style,
+            )
+        })
         .collect()
 }
 
@@ -494,21 +539,25 @@ fn line_occupancy(text: &str, max_columns: usize, tabstop: usize) -> (Vec<bool>,
 
 fn render_row(
     samples: &[Vec<bool>],
+    classes: &[u8; 4],
     width: usize,
     scale: usize,
     style: RenderStyle,
 ) -> RenderedRow {
     let mut output = String::with_capacity(width.saturating_mul(3));
     let mut shade = String::with_capacity(width);
+    let mut cell_classes = String::with_capacity(width);
     for cell in 0..width {
         let mut mask = 0u8;
         let mut density = 0usize;
+        let mut ink_by_class = [0usize; CLASS_ORDER.len()];
         for (sample_row, sample) in samples.iter().take(4).enumerate() {
             for dot_column in 0..2 {
                 let logical_dot = cell * 2 + dot_column;
                 if has_ink(sample, logical_dot, scale) {
                     density += 1;
                     mask |= braille_bit(sample_row, dot_column);
+                    ink_by_class[class_index(classes[sample_row])] += 1;
                 }
             }
         }
@@ -526,11 +575,38 @@ fn render_row(
         };
         output.push(ch);
         shade.push(shade_digit(density));
+        cell_classes.push(char::from(dominant_class(&ink_by_class)));
     }
     RenderedRow {
         text: output,
         shade,
+        classes: cell_classes,
     }
+}
+
+fn class_index(class: u8) -> usize {
+    CLASS_ORDER
+        .iter()
+        .position(|candidate| *candidate == class)
+        .unwrap_or(CLASS_ORDER.len() - 1)
+}
+
+// An empty cell has no class at all, and a cell whose ink is all plain code is
+// left to the density shading -- both report `n` so the frontend has exactly
+// one rule: colour the cell when the class is not `n`, shade it otherwise.
+fn dominant_class(ink_by_class: &[usize; CLASS_ORDER.len()]) -> u8 {
+    let mut best = CLASS_ORDER.len() - 1;
+    let mut best_ink = 0usize;
+    for (index, ink) in ink_by_class.iter().enumerate() {
+        if *ink > best_ink {
+            best = index;
+            best_ink = *ink;
+        }
+    }
+    if best_ink == 0 {
+        return CLASS_NONE;
+    }
+    CLASS_ORDER[best]
 }
 
 fn shade_digit(density: usize) -> char {
@@ -648,6 +724,7 @@ fn self_test() -> Result<(), String> {
                     "}".into(),
                     String::new(),
                 ],
+                classes: [b'k', b's', b'n', b'n'],
             },
             SampleGroup {
                 start: 5,
@@ -658,6 +735,7 @@ fn self_test() -> Result<(), String> {
                     String::new(),
                     String::new(),
                 ],
+                classes: [b'c', b'n', b'n', b'n'],
             },
         ],
     };
@@ -667,6 +745,8 @@ fn self_test() -> Result<(), String> {
             row.text.chars().count() != 8
                 || row.shade.len() != 8
                 || !row.shade.bytes().all(|byte| (b'0'..=b'3').contains(&byte))
+                || row.classes.len() != 8
+                || !row.classes.bytes().all(|byte| CLASS_ORDER.contains(&byte))
         })
     {
         return Err("renderer returned the wrong dimensions".to_string());
@@ -719,12 +799,14 @@ mod tests {
                     "}".into(),
                     String::new(),
                 ],
+                classes: [b'n'; 4],
             }],
         };
         let rows = render(&request);
         assert_eq!(rows.len(), 1);
         assert_eq!(rows[0].text.chars().count(), 12);
         assert_eq!(rows[0].shade.len(), 12);
+        assert_eq!(rows[0].classes.len(), 12);
         assert!(
             rows[0]
                 .shade
@@ -733,29 +815,104 @@ mod tests {
         );
         assert!(rows[0].shade.bytes().any(|byte| byte != b'0'));
     }
+
+    // Density says how much ink a cell has; the class says what kind.  A cell
+    // fed only by a comment line has to come back `c` even though the shade
+    // digit is identical to the one a plain line would have produced.
+    #[test]
+    fn cell_class_follows_the_sample_that_inked_it() {
+        let mut request = RenderRequest {
+            id: 3,
+            width: 4,
+            max_columns: 40,
+            tabstop: 4,
+            style: RenderStyle::Braille,
+            source_lines: 8,
+            expected_groups: 2,
+            groups: Vec::new(),
+        };
+        // Only the first sample line carries ink, so every inked cell in row 1
+        // must take that line's class and nothing else's.
+        parse_group(
+            &["G", "3", "1", "4", "xxxxxxxx", "", "", "", "cnnn"],
+            Some(&mut request),
+        )
+        .expect("comment group");
+        parse_group(
+            &["G", "3", "5", "8", "xxxxxxxx", "", "", "", "knnn"],
+            Some(&mut request),
+        )
+        .expect("keyword group");
+
+        let rows = render(&request);
+        assert_eq!(rows.len(), 2);
+        assert!(rows[0].classes.starts_with("cccc"), "{}", rows[0].classes);
+        assert!(rows[1].classes.starts_with("kkkk"), "{}", rows[1].classes);
+        // Same ink, same brightness: hue is the only thing that differs.
+        assert_eq!(rows[0].shade, rows[1].shade);
+    }
+
+    // An empty cell has no class to report, and a cell inked only by plain
+    // code reports `n` so the frontend falls back to density shading.
+    #[test]
+    fn cells_without_classified_ink_report_none() {
+        let mut request = RenderRequest {
+            id: 4,
+            width: 6,
+            max_columns: 40,
+            tabstop: 4,
+            style: RenderStyle::Braille,
+            source_lines: 4,
+            expected_groups: 1,
+            groups: Vec::new(),
+        };
+        parse_group(
+            &["G", "4", "1", "4", "xx", "", "", "", "cnnn"],
+            Some(&mut request),
+        )
+        .expect("valid group");
+        let rows = render(&request);
+        assert!(rows[0].classes.starts_with('c'));
+        assert!(rows[0].classes.ends_with("nnnn"));
+    }
+
+    #[test]
+    fn group_rejects_a_malformed_class_field() {
+        let fields = ["B", "5", "8", "2", "8", "4", "braille", "8", "1", "3"];
+        let mut request = parse_begin(&fields).expect("valid begin");
+        let short = ["G", "5", "1", "8", "abc", "", "", "", "cnn"];
+        assert!(parse_group(&short, Some(&mut request)).is_err());
+        let unknown = ["G", "5", "1", "8", "abc", "", "", "", "cnnz"];
+        assert!(parse_group(&unknown, Some(&mut request)).is_err());
+        let missing = ["G", "5", "1", "8", "abc", "", "", ""];
+        assert!(parse_group(&missing, Some(&mut request)).is_err());
+    }
     #[test]
     fn begin_rejects_empty_source_or_group_set() {
-        let empty_source = ["B", "1", "8", "4", "80", "4", "braille", "0", "1", "2"];
+        let empty_source = ["B", "1", "8", "4", "80", "4", "braille", "0", "1", "3"];
         assert!(parse_begin(&empty_source).is_err());
 
-        let empty_groups = ["B", "1", "8", "4", "80", "4", "braille", "4", "0", "2"];
+        let empty_groups = ["B", "1", "8", "4", "80", "4", "braille", "4", "0", "3"];
         assert!(parse_begin(&empty_groups).is_err());
 
-        let bad_style = ["B", "1", "8", "4", "80", "4", "pixels", "4", "1", "2"];
+        let bad_style = ["B", "1", "8", "4", "80", "4", "pixels", "4", "1", "3"];
         assert!(parse_begin(&bad_style).is_err());
+
+        let old_protocol = ["B", "1", "8", "4", "80", "4", "braille", "4", "1", "2"];
+        assert!(parse_begin(&old_protocol).is_err());
     }
 
     #[test]
     fn groups_must_be_contiguous_and_bounded() {
-        let fields = ["B", "9", "8", "2", "8", "4", "braille", "8", "2", "2"];
+        let fields = ["B", "9", "8", "2", "8", "4", "braille", "8", "2", "3"];
         let mut request = parse_begin(&fields).expect("valid begin");
-        let first = ["G", "9", "1", "4", "abc", "", "", ""];
+        let first = ["G", "9", "1", "4", "abc", "", "", "", "nnnn"];
         parse_group(&first, Some(&mut request)).expect("valid first group");
 
-        let gap = ["G", "9", "6", "8", "abc", "", "", ""];
+        let gap = ["G", "9", "6", "8", "abc", "", "", "", "nnnn"];
         assert!(parse_group(&gap, Some(&mut request)).is_err());
 
-        let long = ["G", "9", "5", "8", "123456789", "", "", ""];
+        let long = ["G", "9", "5", "8", "123456789", "", "", "", "nnnn"];
         assert!(parse_group(&long, Some(&mut request)).is_err());
     }
 
@@ -764,18 +921,18 @@ mod tests {
         let mut pending: Option<RenderRequest> = None;
         let mut out: Vec<u8> = Vec::new();
         handle_record(
-            "B\t1\t8\t4\t80\t4\tbraille\t4\t1\t2",
+            "B\t1\t8\t4\t80\t4\tbraille\t4\t1\t3",
             &mut pending,
             &mut out,
         )
         .unwrap();
         handle_record(
-            "B\t2\t8\t4\t80\t4\tbraille\t4\t1\t2",
+            "B\t2\t8\t4\t80\t4\tbraille\t4\t1\t3",
             &mut pending,
             &mut out,
         )
         .unwrap();
-        handle_record("G\t2\t1\t4\tfn main()\t\t\t", &mut pending, &mut out).unwrap();
+        handle_record("G\t2\t1\t4\tfn main()\t\t\t\tnnnn", &mut pending, &mut out).unwrap();
         handle_record("E\t2", &mut pending, &mut out).unwrap();
 
         let output = String::from_utf8(out).unwrap();

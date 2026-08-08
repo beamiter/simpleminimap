@@ -23,6 +23,9 @@ SimpleMinimap 是一个面向 **Vim 9** 的右侧代码缩略图插件。它参�
 - 默认使用 Unicode Braille：一个字符承载 `2 × 4` 个密度点；也可切换为 Block 或纯 ASCII。
 - 按单元格的代码密度分三档着色（text properties 实现）：密集代码更亮、稀疏代码更暗，
   minimap 呈现出层次感；需要 `+textprop`，可用 `g:simpleminimap_shading` 关闭。
+- 可选按语法类别着色：打开 `g:simpleminimap_colors` 后，每条样本行按首个非空白列的语法
+  归入注释/字符串/关键字/类型四类之一，后台按每个单元格里贡献墨点最多的类别上色，
+  注释块、字符串表和代码因此一眼可辨；纯代码单元格仍沿用密度分档。需要 `+syntax`。
 - 高亮当前编辑窗口的可见范围和光标所在的 minimap 行，并把 Git、LSP、
   lint 等插件放置的 Vim signs 聚合投影到概览中；signs 按名称自动分类为
   error/warning/info/git add/change/delete 并使用各自的高亮组，同一行取最高严重级。
@@ -195,6 +198,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_show_search` | `1` | 是否把 `hlsearch` 匹配投影到 minimap（需要 `matchbufline()`）；按行区间扫描并在首个命中处停止，不再跳过大文件 |
 | `g:simpleminimap_incremental` | `1` | 是否按行区间缓存采样文本，并用 `listener_add()` 只失效被编辑触及的区间；设为 `0` 则每次渲染都重读整个 buffer |
 | `g:simpleminimap_shading` | `1` | 是否按密度给 minimap 单元格分档着色（需要 `+textprop`） |
+| `g:simpleminimap_colors` | `0` | 是否按语法类别（注释/字符串/关键字/类型）给单元格上色；纯代码单元格仍用密度分档。需要 `+syntax` 和 `g:simpleminimap_shading`。每条样本行一次 `synID()`，且编辑会失效其下方所有区间的分类，因此默认关闭 |
 | `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |
 | `g:simpleminimap_auto_open` | `0` | Vim 启动或进入标签页时自动打开 |
@@ -259,6 +263,10 @@ let g:simpleminimap_set_default_mapping = 0
 | `SimpleMinimapShadeLow` | `NonText` | 稀疏密度单元格 |
 | `SimpleMinimapShadeMid` | `Comment` | 中等密度单元格 |
 | `SimpleMinimapShadeHigh` | `Normal` | 高密度单元格 |
+| `SimpleMinimapSynComment` | `Comment` | 注释贡献墨点最多的单元格（`g:simpleminimap_colors`） |
+| `SimpleMinimapSynString` | `String` | 字符串等字面量贡献墨点最多的单元格 |
+| `SimpleMinimapSynKeyword` | `Statement` | 关键字、预处理行贡献墨点最多的单元格 |
+| `SimpleMinimapSynType` | `Type` | 类型、标识符声明贡献墨点最多的单元格 |
 | `SimpleMinimapTitle` | `Title` | 状态栏标题 |
 
 自定义示例：
@@ -278,24 +286,24 @@ augroup END
 3. 每条样本只截取 `g:simpleminimap_max_columns` 范围内的内容，并按 Vim 的显示宽度展开宽字符、忽略零宽组合字符。
 4. Rust 把非空白字符转换为占用点，并按水平比例压缩。
 5. Braille 模式把 4 条样本映射为字符的 4 个点行，把相邻逻辑列映射为 2 个点列。
-6. 每个渲染单元格附带一个 0..3 的密度档位数字；Vim 把相邻同档单元格合并成
-   text property，实现密集更亮、稀疏更暗的分档着色。
-7. Vim 收到 `{start, end, text, shade}` 后更新 scratch buffer，并叠加视口、光标、sign 与搜索高亮。
+6. 每个渲染单元格附带一个 0..3 的密度档位数字，以及一个语法类别字符；Vim 把相邻同类单元格
+   合并成 text property，实现密集更亮、稀疏更暗的分档着色，以及按语法类别的上色。
+7. Vim 收到 `{start, end, text, shade, classes}` 后更新 scratch buffer，并叠加视口、光标、sign 与搜索高亮。
 
 因此，Vim 与后台之间传输的数据量由窗口高度和列数限制，而不是直接随文件总行数增长。
 
 ## 后台协议
 
-协议（v2）是 UTF-8、TAB 分隔、逐行传输。TAB、换行、回车和 `%` 使用 `%XX` 转义。
+协议（v3）是 UTF-8、TAB 分隔、逐行传输。TAB、换行、回车和 `%` 使用 `%XX` 转义。
 
 ```text
 READY <version>
 B <id> <width> <height> <max_columns> <tabstop> <style> <source_lines> <groups> <version>
-G <id> <start> <end> <sample1> <sample2> <sample3> <sample4>
+G <id> <start> <end> <sample1> <sample2> <sample3> <sample4> <classes>
 E <id>
 
 B <id> <source_lines> <rows>
-R <id> <start> <end> <rendered_text> <shade_digits>
+R <id> <start> <end> <rendered_text> <shade_digits> <class_chars>
 E <id>
 X <id> <message>
 ```
@@ -325,7 +333,8 @@ Vim 集成测试会验证：异步握手、左右侧 session、重复打开防�
 
 ## 已知限制
 
-- 这是字符密度概览，不包含 Tree-sitter/语法组颜色，也不渲染真实字体像素。
+- 这是字符密度概览，不渲染真实字体像素。语法着色（`g:simpleminimap_colors`）基于 Vim 自身的
+  syntax，按行取首个非空白列的语法组，不是 Tree-sitter 的逐 token 着色。
 - 默认的 `'split'` 模式使用独立垂直分屏，因此会占用 Vim 的一个窗口；
   `g:simpleminimap_display = 'popup'` 改为浮在编辑窗口之上、不占窗口，代价是 Vim 不允许
   把光标移进 popup，因此该模式没有按键表、没有鼠标导航，是纯展示的概览。
