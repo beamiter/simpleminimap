@@ -112,7 +112,9 @@ Inside the minimap buffer:
 
   <CR>        Jump to the midpoint of the represented source range.
   <Space>     Preview the range while retaining minimap focus.
-  <LeftMouse> Jump to the clicked range; hold and drag for continuous preview.
+  <LeftMouse> Jump to the clicked range.  Dragging from inside the viewport
+              band drags the band itself, so the minimap works as a scrollbar;
+              dragging from outside it previews continuously as before.
   Mouse wheel Scroll the tracked source window.
   r           Refresh immediately.
   s           Cycle the render style.
@@ -214,8 +216,25 @@ All options must be set before the plugin is loaded.
         three times.  A successful render resets the retry counter.
 
 *g:simpleminimap_mouse_scroll_lines*
-        Number, default 3.  Source lines scrolled per mouse wheel event,
-        clamped to 1..50.
+        Number, clamped to 1..50.  Source lines scrolled per mouse wheel event
+        over the minimap.  When left unset it follows the vertical component of
+        'mousescroll', so the wheel moves the source at the same rate over the
+        minimap as over the code; it falls back to 3 where 'mousescroll' does
+        not exist or is set to ver:0 ("half a window", which has no fixed line
+        count).
+
+*g:simpleminimap_drag_thumb*
+        Boolean number, default 1.  Pressing on the highlighted viewport band
+        and dragging scrolls the source window, like dragging a scrollbar
+        thumb; the source cursor is left where the scroll leaves it.  Pressing
+        anywhere else still jumps to that band, and a press that never becomes
+        a drag behaves the same either way.  Set to 0 to make every drag
+        preview the band under the pointer, as before this option existed.
+
+        Because Vim resolves mappings against the buffer that owns focus when
+        the key is typed, a click that arrives while the source window is
+        current is not delivered to the minimap; the gesture is then anchored
+        on the first drag event instead.
 
 *g:simpleminimap_set_default_mapping*
         Boolean number, default 1.  Install <Leader>m only when it is unused.

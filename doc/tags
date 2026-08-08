@@ -37,6 +37,7 @@ g:simpleminimap_auto_restart	simpleminimap.txt	/*g:simpleminimap_auto_restart*
 g:simpleminimap_daemon_path	simpleminimap.txt	/*g:simpleminimap_daemon_path*
 g:simpleminimap_debounce	simpleminimap.txt	/*g:simpleminimap_debounce*
 g:simpleminimap_debug	simpleminimap.txt	/*g:simpleminimap_debug*
+g:simpleminimap_drag_thumb	simpleminimap.txt	/*g:simpleminimap_drag_thumb*
 g:simpleminimap_ignore_filetypes	simpleminimap.txt	/*g:simpleminimap_ignore_filetypes*
 g:simpleminimap_max_columns	simpleminimap.txt	/*g:simpleminimap_max_columns*
 g:simpleminimap_mouse_scroll_lines	simpleminimap.txt	/*g:simpleminimap_mouse_scroll_lines*

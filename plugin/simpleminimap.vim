@@ -42,7 +42,26 @@ enddef
 g:simpleminimap_width = ClampNumber(get(g:, 'simpleminimap_width', 18), 18, 6, 80)
 g:simpleminimap_max_columns = ClampNumber(get(g:, 'simpleminimap_max_columns', 120), 120, 20, 1000)
 g:simpleminimap_debounce = ClampNumber(get(g:, 'simpleminimap_debounce', 80), 80, 0, 2000)
-g:simpleminimap_mouse_scroll_lines = ClampNumber(get(g:, 'simpleminimap_mouse_scroll_lines', 3), 3, 1, 50)
+# With no explicit setting, scroll the source at the rate Vim scrolls a buffer,
+# so the wheel feels the same over the minimap as over the code.  'mousescroll'
+# arrived in 8.2.4358 and is missing from builds without mouse support, and
+# ver:0 means "half a window", which has no fixed line count -- fall back to
+# Vim's own historical default in both cases.  Vim9 resolves &option names at
+# compile time and raises E113 for an unknown one even inside a guard, so the
+# option has to be read through eval().
+def DefaultScrollLines(): number
+  if exists('+mousescroll')
+    var setting: string = eval('&mousescroll')
+    var vertical = str2nr(matchstr(setting, '\<ver:\zs\d\+'))
+    if vertical > 0
+      return vertical
+    endif
+  endif
+  return 3
+enddef
+
+g:simpleminimap_mouse_scroll_lines = ClampNumber(get(g:, 'simpleminimap_mouse_scroll_lines', DefaultScrollLines()), 3, 1, 50)
+g:simpleminimap_drag_thumb = Flag(get(g:, 'simpleminimap_drag_thumb', 1), 1)
 g:simpleminimap_render_style = Choice(get(g:, 'simpleminimap_render_style', 'braille'), 'braille', ['braille', 'blocks', 'ascii'])
 g:simpleminimap_sampling = Choice(get(g:, 'simpleminimap_sampling', 'adaptive'), 'adaptive', ['adaptive', 'uniform'])
 g:simpleminimap_side = Choice(get(g:, 'simpleminimap_side', 'right'), 'right', ['left', 'right'])

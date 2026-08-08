@@ -1148,6 +1148,23 @@ def RowForSourceLine(rows: list<any>, source_line: number): number
 enddef
 
 
+# The minimap rows covered by the source window's visible range: the "thumb"
+# of the scrollbar.  Returns [0, 0] when there is nothing to project.
+def ViewportRows(session: dict<any>): list<number>
+  if empty(get(session, 'rows', [])) || !WindowExists(get(session, 'source_winid', 0))
+    return [0, 0]
+  endif
+  var source_info = WindowInfo(session.source_winid)
+  if empty(source_info)
+    return [0, 0]
+  endif
+  var top_line = max([1, get(source_info, 'topline', 1)])
+  var bottom_line = max([top_line, get(source_info, 'botline', top_line)])
+  return [RowForSourceLine(session.rows, top_line),
+    RowForSourceLine(session.rows, bottom_line)]
+enddef
+
+
 def UpdateViewport(key: string)
   if !has_key(sessions, key)
     return
@@ -1164,11 +1181,11 @@ def UpdateViewport(key: string)
     return
   endif
   var top_line = max([1, get(source_info, 'topline', 1)])
-  var bottom_line = max([top_line, get(source_info, 'botline', top_line)])
   var cursor_pos = getcurpos(session.source_winid)
   var cursor_line = len(cursor_pos) > 1 ? cursor_pos[1] : top_line
-  var first_row = RowForSourceLine(session.rows, top_line)
-  var last_row = RowForSourceLine(session.rows, bottom_line)
+  var band = ViewportRows(session)
+  var first_row = band[0]
+  var last_row = band[1]
   var cursor_row = RowForSourceLine(session.rows, cursor_line)
 
   DeleteMatch(key, 'viewport_match')
@@ -1342,6 +1359,8 @@ def OpenForCurrentTab()
       search_rows: [],
       search_state: [],
       preview_origin: [],
+      drag_anchor: {},
+      last_scroll: [],
       request_started: [],
       request_signature: '',
       last_signature: '',
@@ -1771,10 +1790,47 @@ def NavigateMouse(focus_source: bool): bool
 enddef
 
 
+def ThumbDragEnabled(): bool
+  return get(g:, 'simpleminimap_drag_thumb', 1) != 0
+enddef
+
+
+# A drag that starts on the viewport band drags the band -- the minimap acts as
+# a scrollbar.  A drag that starts anywhere else keeps the historical
+# preview-the-clicked-band behaviour.
+def DragAnchorFor(session: dict<any>, row: number): dict<any>
+  var band = ViewportRows(session)
+  # A band spanning every row means the whole buffer is already on screen:
+  # there is no scrollbar to grab, so such a drag stays a preview.
+  var scrollable = band[0] > 0 && (band[1] - band[0] + 1) < len(session.rows)
+  return {
+    row: row,
+    top_row: max([1, band[0]]),
+    thumb: ThumbDragEnabled() && scrollable && row >= band[0] && row <= band[1],
+    dragged: false,
+  }
+enddef
+
+
+# Grabbing the thumb deliberately moves nothing: a press that never becomes a
+# drag still resolves through MouseUp() exactly as it always did.
 export def MouseDown()
   var key = CurrentSessionKey()
   if key ==# '' || !has_key(sessions, key)
     return
+  endif
+  var session = sessions[key]
+  session.drag_anchor = {}
+  var mouse = getmousepos()
+  if get(mouse, 'winid', 0) == session.winid
+      && !empty(session.rows) && get(mouse, 'line', 0) >= 1
+    var anchor = DragAnchorFor(session, Clamp(mouse.line, 1, len(session.rows)))
+    session.drag_anchor = anchor
+    if anchor.thumb
+      win_gotoid(session.winid)
+      cursor(anchor.row, 1)
+      return
+    endif
   endif
   NavigateMouse(false)
 enddef
@@ -1782,8 +1838,42 @@ enddef
 
 export def MouseDrag()
   var key = CurrentSessionKey()
-  if key !=# '' && has_key(sessions, key)
+  if key ==# '' || !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  var mouse = getmousepos()
+  if get(mouse, 'winid', 0) != session.winid
+      || empty(session.rows) || get(mouse, 'line', 0) < 1
+    return
+  endif
+  var row = Clamp(mouse.line, 1, len(session.rows))
+
+  var anchor = get(session, 'drag_anchor', {})
+  if empty(anchor)
+    # Mappings are resolved against the buffer that owns focus when the key is
+    # typed, so a click that arrives while the *source* window is current never
+    # reaches the minimap's buffer-local <LeftMouse> mapping: the press is
+    # simply not delivered.  Anchor on the first drag event instead of losing
+    # the gesture; drags stream continuously, so this row is still the one the
+    # user pressed on.
+    anchor = DragAnchorFor(session, row)
+    session.drag_anchor = anchor
+  endif
+  if !anchor.thumb
     NavigateMouse(false)
+    return
+  endif
+
+  # Absolute, not incremental: the target is always derived from the row the
+  # gesture started on, so the thumb cannot drift away from the pointer over a
+  # long drag or when a scroll is clamped at either end of the buffer.
+  var target_row = Clamp(anchor.top_row + (row - anchor.row), 1, len(session.rows))
+  if ScrollSourceToTop(key, session.rows[target_row - 1].start)
+    anchor.dragged = true
+  endif
+  if WindowExists(session.winid)
+    win_execute(session.winid, printf('call cursor(%d, 1)', row))
   endif
 enddef
 
@@ -1793,8 +1883,19 @@ export def MouseUp()
   if key ==# '' || !has_key(sessions, key)
     return
   endif
+  var session = sessions[key]
+  var anchor = get(session, 'drag_anchor', {})
+  session.drag_anchor = {}
+  if get(anchor, 'dragged', false)
+    # A thumb drag is a scroll, not a jump: leave the source cursor where the
+    # scroll left it and just hand focus back.
+    if WindowExists(session.source_winid)
+      win_gotoid(session.source_winid)
+    endif
+    return
+  endif
   if !NavigateMouse(true)
-    win_gotoid(sessions[key].source_winid)
+    win_gotoid(session.source_winid)
   endif
 enddef
 
@@ -1802,6 +1903,42 @@ enddef
 export def MouseJump()
   # Backward-compatible public entry point used by older mappings.
   NavigateMouse(true)
+enddef
+
+
+# Scroll the tracked source window so its first visible line becomes
+# target_top.  winrestview({'topline': …}) cannot do this: Vim immediately
+# re-clamps topline to keep the (unmoved) cursor visible, which is why wheel
+# scrolling over the minimap used to do literally nothing.  <C-E>/<C-Y> is the
+# scroll Vim honours, and it is what the wheel itself sends, so the cursor is
+# carried along only when it would otherwise leave the window.
+# Returns true when the view actually moved.
+def ScrollSourceToTop(key: string, target_top: number): bool
+  if !has_key(sessions, key)
+    return false
+  endif
+  var session = sessions[key]
+  if !WindowExists(session.source_winid)
+    return false
+  endif
+  var info = WindowInfo(session.source_winid)
+  var current_top = max([1, get(info, 'topline', 1)])
+  var delta = target_top - current_top
+  # Recorded for :SimpleMinimapDebug: the scroll a user reports as "wrong" is
+  # invisible afterwards, since only the resulting topline survives.
+  session.last_scroll = [current_top, target_top]
+  if delta == 0
+    return false
+  endif
+  internal_change = true
+  try
+    win_execute(session.source_winid,
+      printf("normal! %d%s", abs(delta), delta > 0 ? "\<C-E>" : "\<C-Y>"))
+  finally
+    internal_change = false
+  endtry
+  UpdateViewport(key)
+  return true
 enddef
 
 
@@ -1816,16 +1953,10 @@ export def ScrollSource(direction: number)
   if empty(info) || empty(source_info)
     return
   endif
-  var step = get(g:, 'simpleminimap_mouse_scroll_lines', 3)
+  var step = Clamp(get(g:, 'simpleminimap_mouse_scroll_lines', 3), 1, 50)
   var source_lines = max([1, get(source_info[0], 'linecount', 1)])
   var target_top = Clamp(get(info, 'topline', 1) + (direction * step), 1, source_lines)
-  internal_change = true
-  try
-    win_execute(session.source_winid, 'call winrestview({"topline": ' .. target_top .. '})')
-  finally
-    internal_change = false
-  endtry
-  UpdateViewport(key)
+  ScrollSourceToTop(key, target_top)
 enddef
 
 

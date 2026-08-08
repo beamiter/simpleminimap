@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -34,6 +34,12 @@ test-vim:
 
 test-vim-lifecycle:
 	vim -Nu NONE -n -es -S tests/vim_lifecycle.vim
+
+# Needs a source buffer much taller than the window, which the shared
+# integration fixture (six lines) cannot provide: a six-line buffer never
+# scrolls, so every scroll assertion there would pass vacuously.
+test-vim-scroll:
+	vim -Nu NONE -n -es -S tests/vim_scroll.vim
 
 test-vim-real: build
 	SIMPLEMINIMAP_TEST_DAEMON="$(CURDIR)/target/release/simpleminimap-daemon" \

@@ -14,6 +14,19 @@ All notable changes to SimpleMinimap are documented here.
 - 新增 `simpleminimap#StatuslineExpr()`,返回 minimap 状态栏的规范值(
   `g:simpleminimap_show_statusline` 为 0 时返回空串)。状态栏管理器不必再硬编码
   那串字面量,也就不会与插件版本漂移。
+- 在 minimap 上滚动鼠标滚轮此前**完全没有效果**:`ScrollSource()` 用
+  `winrestview({'topline': …})` 滚动,而 Vim 会立刻把 topline 拉回去以保证没动过
+  的光标可见。这个功能在 README、help 和缓冲区按键表里都写着,却一行断言都没有。
+  改用 Vim 真正认账的 `<C-E>` / `<C-Y>`,并补上前后对比 `topline` 的回归测试。
+- `g:simpleminimap_mouse_scroll_lines` 未显式设置时改为跟随 `'mousescroll'` 的
+  `ver:`,滚轮在 minimap 上和在代码上的手感一致。
+
+### 新增
+
+- 视口拖拽:按住左键从视口高亮带内起手,拖动的是视口本身——minimap 直接当滚动条
+  用,这是它最常见的用途,此前做不到。带外起手仍然是原来的“跳到该带并连续预览”,
+  单击(没有变成拖动)的行为在两种情况下都保持不变。可用
+  `g:simpleminimap_drag_thumb = 0` 关闭。
 
 ## Unreleased - 2026-08-05
 

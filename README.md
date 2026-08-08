@@ -150,7 +150,8 @@ minimap 缓冲区内的按键：
 |---|---|
 | `<CR>` | 跳到当前 minimap 行对应源代码范围的中点 |
 | `<Space>` | 预览当前范围并保持 minimap 焦点 |
-| 左键单击/拖动 | 跳到目标范围；拖动时连续移动视口 |
+| 左键单击 | 跳到目标范围 |
+| 左键拖动 | 从视口高亮带内起手 = 拖动视口（把 minimap 当滚动条用）；从带外起手 = 连续预览 |
 | 鼠标滚轮 | 滚动源代码窗口 |
 | `r` | 立即刷新 |
 | `s` | 循环切换渲染风格 |
@@ -182,7 +183,8 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |
 | `g:simpleminimap_auto_open` | `0` | Vim 启动或进入标签页时自动打开 |
 | `g:simpleminimap_auto_restart` | `1` | 后台异常退出时限次自动重启 |
-| `g:simpleminimap_mouse_scroll_lines` | `3` | 在 minimap 上滚动一格滚轮时源窗口移动的行数，限制为 `1..50` |
+| `g:simpleminimap_mouse_scroll_lines` | 跟随 `'mousescroll'` | 在 minimap 上滚动一格滚轮时源窗口移动的行数，限制为 `1..50`；未显式设置时取 `'mousescroll'` 的 `ver:`，没有该选项或为 `ver:0` 时回退到 `3` |
+| `g:simpleminimap_drag_thumb` | `1` | 从视口高亮带内起手的左键拖动是否滚动源窗口（滚动条式）；设为 `0` 恢复“拖动即预览” |
 | `g:simpleminimap_set_default_mapping` | `1` | 是否在 `<leader>m` 空闲时安装默认映射 |
 | `g:simpleminimap_debug` | `0` | 是否通过 `:messages` 输出调试日志 |
 
