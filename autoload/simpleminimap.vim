@@ -105,6 +105,12 @@ var internal_change = false
 var ping_id = 0
 var ping_started: any = []
 var backend_latency_ms = -1.0
+# Serial number for popup scratch buffer names.  The name has to be unique for
+# the lifetime of the Vim session: bufadd() hands back the *existing* buffer
+# for a name that is already taken, and two popup sessions sharing one buffer
+# render over each other.  A counter cannot alias; anything derived from the
+# clock plus the window id can (see the popup section of tests/vim_popup.vim).
+var popup_buffer_serial = 0
 
 
 # Kept as a ring buffer, not just an echo: the interesting backend events
@@ -1204,9 +1210,13 @@ def ReleaseBufferListener(bufnr: number)
 enddef
 
 
-# Called after anything that can drop a session: a listener on a buffer no
-# session tracks any more is a leak that keeps firing for the rest of the
-# session.
+# Called after anything that can change which buffers the live sessions track
+# -- a dropped session, but also a `:edit` in the tracked window, which is the
+# ordinary way of using the minimap: a listener on a buffer no session tracks
+# any more is a leak that keeps firing for the rest of the Vim session, and it
+# drags a sample cache nothing will ever read again along with it.  Costs one
+# dict entry per session plus one per watched buffer, both bounded by the
+# number of tab pages once this runs on every render.
 def ReleaseUnusedListeners()
   var live: dict<bool> = {}
   for session in values(sessions)
@@ -1287,6 +1297,10 @@ def BuildRequestBody(key: string): dict<any>
   var entries: dict<any> = {}
   if incremental
     EnsureBufferListener(session.source_bufnr)
+    # The tracked buffer changes whenever the user edits another file in the
+    # tracked window, and the session it belongs to is never dropped, so this
+    # is the only place that reclaims the buffer it tracked a moment ago.
+    ReleaseUnusedListeners()
     # Listener callbacks are queued until a redraw or an explicit flush, and
     # this runs from a timer.  Without the flush the cache would still be
     # holding the samples from before the keystroke that scheduled the render,
@@ -2436,7 +2450,8 @@ def OpenForCurrentTab()
       # A popup needs a buffer that is not displayed anywhere else, and
       # bufhidden=wipe would take it away the moment the popup is hidden on a
       # tab switch, so this one is owned and wiped by CloseSession() instead.
-      minimap_bufnr = bufadd(printf('simpleminimap://popup/%d', localtime() + source_winid))
+      popup_buffer_serial += 1
+      minimap_bufnr = bufadd(printf('simpleminimap://popup/%d', popup_buffer_serial))
       bufload(minimap_bufnr)
       setbufvar(minimap_bufnr, '&buftype', 'nofile')
       setbufvar(minimap_bufnr, '&swapfile', 0)

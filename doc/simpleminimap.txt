@@ -338,6 +338,10 @@ All options must be set before the plugin is loaded.
         re-read the whole buffer on every render.  |:SimpleMinimapHealth|
         reports how many bands were reused and how many were resampled.
 
+        A buffer is watched only while a live session tracks it: editing
+        another file in the tracked window releases the previous buffer's
+        listener and its cache, so browsing accumulates neither.
+
 *g:simpleminimap_shading*
         Boolean number, default 1.  Shade every rendered minimap cell by its
         code density using text properties: sparse cells use

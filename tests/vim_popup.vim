@@ -152,6 +152,16 @@ SimpleMinimapStyle braille
 doautocmd ColorScheme
 call assert_equal(1, popup_getpos(s:Session().winid).visible,
       \ 'a ColorScheme reload leaves the popup alone')
+" `visible` on its own proves nothing -- setwinvar() on a popup does not throw
+" and does not hide it -- so assert the options themselves.  Without the guard
+" the popup comes out of a reload carrying the minimap statusline expression
+" and 'winfixwidth', neither of which a popup has any use for.
+call assert_equal('', getwinvar(s:Session().winid, '&statusline', 'unset'),
+      \ 'a ColorScheme reload does not push a statusline onto the popup')
+call assert_equal(0, getwinvar(s:Session().winid, '&winfixwidth', -1),
+      \ 'a ColorScheme reload does not push winfixwidth onto the popup')
+call assert_equal('SimpleMinimapNormal', getwinvar(s:Session().winid, '&wincolor', ''),
+      \ 'the popup keeps the colour it was created with')
 
 " ---------------------------------------------------------------------------
 " Closing takes the popup and its buffer with it.
@@ -170,6 +180,84 @@ SimpleMinimap
 call assert_equal('popup', s:Session().kind)
 SimpleMinimap
 call assert_equal({}, s:Session())
+
+" ---------------------------------------------------------------------------
+" Two popup sessions at once must not share a scratch buffer.
+"
+" A popup buffer used to be named `simpleminimap://popup/<localtime() +
+" source_winid>`, and that sum aliases between tab pages: open the minimap in
+" the tab whose window id is the higher one, let the clock make up the
+" difference, open it in the other tab, and bufadd() hands the second session
+" the first session's buffer.  Both then render into it -- whichever renders
+" last wins, so one tab shows the other tab's file -- and closing either one
+" wipes a buffer the surviving popup is still displaying.  The wait below is
+" what makes that collision certain rather than a one-second-in-N flake.
+" ---------------------------------------------------------------------------
+function! s:SessionForTab(tabnr) abort
+  for session in values(simpleminimap#DebugStatus().sessions)
+    if get(session, 'tabnr', -1) == a:tabnr
+      return session
+    endif
+  endfor
+  return {}
+endfunction
+
+function! s:WaitForTab(tabnr) abort
+  let attempt = 0
+  while empty(get(s:SessionForTab(a:tabnr), 'rows', [])) && attempt < 200
+    sleep 20m
+    let attempt += 1
+  endwhile
+  return s:SessionForTab(a:tabnr)
+endfunction
+
+let s:tab1_winid = win_getid()
+tabnew
+call setline(1, map(range(1, 120), 'printf("other tab %03d", v:val)'))
+let s:tab2_winid = win_getid()
+call assert_true(s:tab2_winid > s:tab1_winid,
+      \ 'the second tab page owns the later window id')
+call assert_true(s:tab2_winid - s:tab1_winid <= 5,
+      \ 'the two window ids are close enough to force the collision below')
+
+SimpleMinimapOpen
+let s:tab2 = s:WaitForTab(2)
+call assert_true(!empty(get(s:tab2, 'rows', [])), 'the second tab rendered')
+let s:opened_at = localtime()
+while localtime() - s:opened_at < s:tab2_winid - s:tab1_winid
+  sleep 50m
+endwhile
+
+tabprevious
+SimpleMinimapOpen
+let s:tab1 = s:WaitForTab(1)
+call assert_true(!empty(get(s:tab1, 'rows', [])), 'the first tab rendered')
+let s:tab2 = s:SessionForTab(2)
+call assert_equal(2, len(simpleminimap#DebugStatus().sessions),
+      \ 'both tab pages have a session')
+call assert_notequal(s:tab1.bufnr, s:tab2.bufnr,
+      \ 'two live popup sessions own two different scratch buffers')
+call assert_equal(200, s:tab1.source_lines)
+call assert_equal(120, s:tab2.source_lines)
+call assert_equal(len(s:tab1.rows), len(getbufline(s:tab1.bufnr, 1, '$')),
+      \ 'the first tab displays its own rendering')
+call assert_equal(len(s:tab2.rows), len(getbufline(s:tab2.bufnr, 1, '$')),
+      \ 'the second tab displays its own rendering')
+
+" Closing one of them must not take the other one's buffer with it.
+tabnext
+SimpleMinimapClose
+call assert_equal({}, s:SessionForTab(2), 'the second tab session is gone')
+call assert_false(bufexists(s:tab2.bufnr), 'it wiped its own buffer')
+tabprevious
+call assert_true(bufexists(s:tab1.bufnr),
+      \ 'closing one popup session leaves the other one its buffer')
+call assert_equal(1, popup_getpos(s:tab1.winid).visible,
+      \ 'the surviving popup is still on screen')
+call assert_equal(len(s:tab1.rows), len(getbufline(s:tab1.bufnr, 1, '$')))
+SimpleMinimapClose
+call assert_equal({}, s:SessionForTab(1))
+call assert_false(bufexists(s:tab1.bufnr))
 
 call simpleminimap#Stop()
 

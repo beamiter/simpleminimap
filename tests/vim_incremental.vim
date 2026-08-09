@@ -110,6 +110,33 @@ call assert_equal(0, s:after.hits - s:before.hits,
 let g:simpleminimap_incremental = 1
 
 " ---------------------------------------------------------------------------
+" Browsing files in the tracked window does not accumulate listeners.
+"
+" Every render watches the buffer the session tracks *now*, and nothing used to
+" release the one it tracked a moment ago: the only caller of
+" ReleaseUnusedListeners() was the drop-a-session path, which a session that
+" stays open never takes.  Opening a dozen files one after another in the one
+" tracked window -- the ordinary way of using the minimap -- left a dozen
+" listeners firing on every edit in their buffers for the rest of the Vim
+" session, each walking a sample cache nothing would ever read again.
+" ---------------------------------------------------------------------------
+let s:browsed = []
+let s:renders = get(s:Session(), 'render_count', 0)
+for s:i in range(1, 12)
+  enew!
+  call setline(1, map(range(1, 300), 'printf("browsed ' .. s:i .. ' line %04d", v:val)'))
+  call add(s:browsed, bufnr())
+  call simpleminimap#OnContextChanged()
+  let s:renders = s:WaitForRenders(s:renders + 1)
+endfor
+call assert_equal(12, len(uniq(sort(copy(s:browsed)))),
+      \ 'the twelve files really were twelve different buffers')
+call assert_equal(s:browsed[-1], s:Session().source_bufnr,
+      \ 'the session followed the tracked window to the last of them')
+call assert_equal(1, simpleminimap#SampleCacheStats().buffers,
+      \ 'one session watches one buffer, however many it has browsed through')
+
+" ---------------------------------------------------------------------------
 " Closing the last session that tracks a buffer stops watching it.
 " ---------------------------------------------------------------------------
 SimpleMinimapClose

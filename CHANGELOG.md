@@ -87,6 +87,26 @@ All notable changes to SimpleMinimap are documented here.
   本插件定义的每个 tag 都在自己的命名空间内、以及文中每个 `|link|` 都能解析。
   上面两个缺陷都在其他所有测试和肉眼审阅之下不可见,这个测试同时抓到它们。
 
+- popup 模式下的 scratch buffer 此前叫 `simpleminimap://popup/<localtime() +
+  source_winid>`,而这个和在标签页之间会撞名:在窗口 id 较大的那个标签页里打开
+  minimap,等时钟补上 id 之差,再在另一个标签页里打开,`bufadd()` 就把第一个会话
+  的 buffer 交给了第二个。两个 popup 于是渲染进同一个 buffer(后渲染的覆盖先渲染
+  的,一个标签页显示另一个标签页的文件),而关掉其中之一会去 `bwipeout!` 另一个
+  popup 仍在显示的 buffer。改用只增不减的序号命名,`tests/vim_popup.vim` 现在同时
+  开两个标签页的 popup 会话并断言二者的 buffer 不同、各自显示自己的渲染、关掉一个
+  不影响另一个。
+- 采样缓存的 buffer listener 此前只在**会话被丢弃**时回收。而一个会话在其生命期内
+  会跟随被跟踪窗口换 buffer——`:edit` 另一个文件正是使用 minimap 的常态:每换一个
+  文件就多一个 listener 和一份再也不会被读的采样缓存,它们在整个 Vim 会话里对各自
+  buffer 的每次编辑持续触发(实测开着一个 minimap 依次打开 12 个文件后,
+  `:SimpleMinimapHealth` 报 “13 buffers watched”)。现在渲染路径在换 buffer 后即刻
+  回收无人跟踪的 listener,`tests/vim_incremental.vim` 断言一个会话无论浏览过多少
+  文件都只监视一个 buffer。
+- `ColorScheme` 重载不再把 minimap 的 `'statusline'` 与 `'winfixwidth'` 推到 popup
+  窗口上(popup 两者都用不上)。此前 `tests/vim_popup.vim` 对此只断言 popup 仍
+  `visible`,而 `setwinvar()` 打在 popup 上既不报错也不会把它藏起来,断言等于没写;
+  现在直接断言这两个窗口局部选项保持默认值。
+
 ### 构建与 CI 修复
 
 - CI 的 msrv 作业固定在 `dtolnay/rust-toolchain@1.85.0`,而 `Cargo.toml` 声明的是
