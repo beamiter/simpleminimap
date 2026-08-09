@@ -259,6 +259,32 @@ SimpleMinimapClose
 call assert_equal({}, s:SessionForTab(1))
 call assert_false(bufexists(s:tab1.bufnr))
 
+" ---------------------------------------------------------------------------
+" A popup we did not close ourselves still gives its buffer back.
+"
+" SimpleMinimapClose is not the only way a popup session ends: popup_clear()
+" dismisses every popup on screen, and several plugins call it to get rid of
+" their own, so ours goes with them.  The session is then removed by the next
+" prune rather than by CloseSession(), and that path used to leave the scratch
+" buffer loaded for the rest of the Vim session -- buflisted=0 and
+" buftype=nofile, so invisible in :ls and never reclaimed, one more stranded
+" for every such cycle.
+"
+" Kept last in this file: opening one more popup consumes window ids, and the
+" collision test above needs the two tab pages' ids to stay close together.
+" ---------------------------------------------------------------------------
+SimpleMinimap
+let s:cleared = s:Session()
+call assert_equal('popup', get(s:cleared, 'kind', ''), 'a popup session is open')
+call assert_true(bufexists(s:cleared.bufnr), 'and it has its scratch buffer')
+call popup_clear()
+call assert_equal([], getwininfo(s:cleared.winid), 'a third party closed the popup')
+" DebugStatus() prunes, which is what any command touching the session would
+" have done too: it is the removal path, not the command, that is under test.
+call assert_equal({}, s:Session(), 'the orphaned session is dropped')
+call assert_false(bufexists(s:cleared.bufnr),
+      \ 'dropping a popup session reclaims its buffer, not just closing one')
+
 call simpleminimap#Stop()
 
 if len(v:errors)

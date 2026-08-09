@@ -268,6 +268,27 @@ def ForgetRequestsForSession(key: string)
 enddef
 
 
+# Give back what a popup session owns: the surface and the scratch buffer
+# nothing else displays.  Both, in that order -- :bwipeout is a silent no-op
+# while the buffer is still shown in a popup, so closing the popup first is
+# what makes the wipe take effect.  Called from DropSession() rather than only
+# from CloseSession(), because a popup can also go away without us: any plugin
+# that calls popup_clear() to dismiss its own popups takes ours too, and the
+# session is then removed by PruneSessions()/OnWinClosed() on the path that
+# used to leave the buffer loaded for the rest of the Vim session.
+def ReclaimPopupSurface(session: dict<any>)
+  if !IsPopupSession(session)
+    return
+  endif
+  if WindowExists(get(session, 'winid', 0))
+    popup_close(session.winid)
+  endif
+  if bufexists(get(session, 'bufnr', -1))
+    execute 'bwipeout!' session.bufnr
+  endif
+enddef
+
+
 def DropSession(key: string): dict<any>
   if !has_key(sessions, key)
     return {}
@@ -281,6 +302,9 @@ def DropSession(key: string): dict<any>
   sessions->remove(key)
   ForgetRequestsForSession(key)
   ReleaseUnusedListeners()
+  # After the removal above, so that the WinClosed the popup may fire finds no
+  # session left to recurse into.
+  ReclaimPopupSurface(session)
   return session
 enddef
 
@@ -2526,7 +2550,9 @@ def OpenForCurrentTab()
       DropSession(opened_key)
     endif
     if kind ==# 'popup'
-      if minimap_winid > 0
+      # DropSession() reclaims these once a session exists; here they may have
+      # been created before one did, so they are reclaimed by hand as well.
+      if WindowExists(minimap_winid)
         popup_close(minimap_winid)
       endif
       if minimap_bufnr > 0 && bufexists(minimap_bufnr)
@@ -2560,12 +2586,7 @@ def CloseSession(key: string)
   if IsPopupSession(session)
     # The popup owns its buffer -- nothing else displays it -- so closing the
     # popup has to take the buffer with it or every toggle leaks one.
-    if WindowExists(session.winid)
-      popup_close(session.winid)
-    endif
-    if bufexists(get(session, 'bufnr', -1))
-      execute 'bwipeout!' session.bufnr
-    endif
+    # DropSession() above has already done both, on every removal path.
     return
   endif
   if !WindowExists(session.winid)
