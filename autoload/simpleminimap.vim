@@ -273,8 +273,9 @@ enddef
 # while the buffer is still shown in a popup, so closing the popup first is
 # what makes the wipe take effect.  Called from DropSession() rather than only
 # from CloseSession(), because a popup can also go away without us: any plugin
-# that calls popup_clear() to dismiss its own popups takes ours too, and the
-# session is then removed by PruneSessions()/OnWinClosed() on the path that
+# that calls popup_clear() to dismiss its own popups takes ours too.  Vim fires
+# no WinClosed for a popup window, so OnWinClosed() never hears about that and
+# PruneSessions() is the only path such a session leaves by -- the path that
 # used to leave the buffer loaded for the rest of the Vim session.
 def ReclaimPopupSurface(session: dict<any>)
   if !IsPopupSession(session)
@@ -302,8 +303,11 @@ def DropSession(key: string): dict<any>
   sessions->remove(key)
   ForgetRequestsForSession(key)
   ReleaseUnusedListeners()
-  # After the removal above, so that the WinClosed the popup may fire finds no
-  # session left to recurse into.
+  # After the removal above.  The reclaim's own `bwipeout!` raises BufWipeout,
+  # and OnBufferWipeout() drops whichever session owns the wiped buffer -- with
+  # the key already gone that lookup finds nothing, so the wipe cannot re-enter
+  # DropSession() for the session we are in the middle of dropping.  WinClosed
+  # is not what has to be guarded here: Vim does not fire it for popups.
   ReclaimPopupSurface(session)
   return session
 enddef
@@ -2473,7 +2477,9 @@ def OpenForCurrentTab()
       endif
       # A popup needs a buffer that is not displayed anywhere else, and
       # bufhidden=wipe would take it away the moment the popup is hidden on a
-      # tab switch, so this one is owned and wiped by CloseSession() instead.
+      # tab switch, so this one is reclaimed by ReclaimPopupSurface() instead,
+      # from DropSession() -- every path that drops the session, not just
+      # CloseSession().
       popup_buffer_serial += 1
       minimap_bufnr = bufadd(printf('simpleminimap://popup/%d', popup_buffer_serial))
       bufload(minimap_bufnr)

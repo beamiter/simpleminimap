@@ -270,20 +270,49 @@ call assert_false(bufexists(s:tab1.bufnr))
 " buftype=nofile, so invisible in :ls and never reclaimed, one more stranded
 " for every such cycle.
 "
+" The event recorder below pins the two facts DropSession()'s ordering comment
+" states, because both are easy to get wrong from memory: Vim fires no
+" WinClosed for a popup window (so a prune, never OnWinClosed(), is what drops
+" a popup session someone else dismissed), and the reclaim's own bwipeout!
+" does fire BufWipeout (so OnBufferWipeout() is the re-entrancy that removing
+" the session before reclaiming has to keep out).
+"
 " Kept last in this file: opening one more popup consumes window ids, and the
 " collision test above needs the two tab pages' ids to stay close together.
 " ---------------------------------------------------------------------------
+let g:sm_winclosed = []
+let g:sm_bufwipeout = []
+augroup SimpleMinimapPopupEvents
+  autocmd!
+  autocmd WinClosed * call add(g:sm_winclosed, str2nr(expand('<amatch>')))
+  autocmd BufWipeout * call add(g:sm_bufwipeout, str2nr(expand('<abuf>')))
+augroup END
+
 SimpleMinimap
 let s:cleared = s:Session()
 call assert_equal('popup', get(s:cleared, 'kind', ''), 'a popup session is open')
 call assert_true(bufexists(s:cleared.bufnr), 'and it has its scratch buffer')
 call popup_clear()
 call assert_equal([], getwininfo(s:cleared.winid), 'a third party closed the popup')
+call assert_equal(-1, index(g:sm_winclosed, s:cleared.winid),
+      \ 'Vim fires no WinClosed for a popup window')
 " DebugStatus() prunes, which is what any command touching the session would
 " have done too: it is the removal path, not the command, that is under test.
 call assert_equal({}, s:Session(), 'the orphaned session is dropped')
 call assert_false(bufexists(s:cleared.bufnr),
       \ 'dropping a popup session reclaims its buffer, not just closing one')
+call assert_notequal(-1, index(g:sm_bufwipeout, s:cleared.bufnr),
+      \ 'the reclaim wipes the scratch buffer itself, raising BufWipeout')
+
+" Control for the WinClosed assertion above: the same recorder does see an
+" ordinary window close, so that assertion is about popups rather than about a
+" recorder that never fires.
+new
+let s:probe_winid = win_getid()
+close
+call assert_notequal(-1, index(g:sm_winclosed, s:probe_winid),
+      \ 'the recorder does fire for an ordinary window')
+autocmd! SimpleMinimapPopupEvents
 
 call simpleminimap#Stop()
 

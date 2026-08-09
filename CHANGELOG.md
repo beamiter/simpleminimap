@@ -97,8 +97,9 @@ All notable changes to SimpleMinimap are documented here.
   不影响另一个。
 - popup 会话的 scratch buffer 此前只在 `:SimpleMinimapClose` 这条路径上被回收。
   可是 popup 并不只由我们关闭:任何插件调用 `popup_clear()` 收自己的 popup 时,
-  我们的也一并被收走,会话随后由 prune / `WinClosed` 丢弃——那条路径不 wipe
-  buffer,于是 `simpleminimap://popup/<N>` 在整个 Vim 会话里一直 loaded。它
+  我们的也一并被收走,会话随后由 prune 丢弃(Vim 不给 popup 窗口发 `WinClosed`,
+  prune 是这种会话唯一的离场路径)——那条路径不 wipe buffer,于是
+  `simpleminimap://popup/<N>` 在整个 Vim 会话里一直 loaded。它
   `buflisted=0` 且 `buftype=nofile`,`:ls` 里看不见,也永远不会被回收,每来一轮
   就多搁浅一个。现在回收动作放在 `DropSession()` 里(先关 popup 再 `bwipeout!`
   ——buffer 还挂在 popup 上时 `:bwipeout` 是静默空操作),任何丢弃路径都还得回来。
