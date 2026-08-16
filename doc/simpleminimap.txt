@@ -489,9 +489,11 @@ another eligible buffer into the same window.  TextChanged, TextChangedI,
 BufWritePost, WinResized, WinScrolled, tabstop changes and SimpleRemote's
 User SimpleRemoteBufferRead schedule an update.  Re-entering the source
 window -- BufEnter, WinEnter, or an OptionSet on 'buftype' or 'filetype' --
-compares the buffer's line count with the one the rows on screen were
-rendered from and re-renders on a mismatch, which catches a buffer that was
-filled from a job or timer callback without any TextChanged.
+compares the buffer's line count and its b:changedtick with the ones the rows
+on screen were rendered from and re-renders when either differs, which
+catches a buffer that was filled from a job or timer callback without any
+TextChanged, including a fill that leaves the line count alone.  A buffer
+nobody touched matches on both and costs no request.
 
 The source is divided into at most one group per minimap screen row.  A group
 contains four representative source lines.  Adaptive mode chooses among three
@@ -594,9 +596,11 @@ workspace, ...}.  Two things follow from that:
   filled text appears without waiting for the next keypress (a callback's
   setbufline() fires no TextChanged).  Independently of that event, any
   BufEnter, WinEnter or 'buftype'/'filetype' OptionSet on the source window
-  re-renders when the buffer's line count no longer matches the rows on
-  screen, which covers other BufReadCmd-style plugins that fill a buffer
-  from a callback.
+  re-renders when the buffer's line count or its b:changedtick no longer
+  matches what the rows on screen were rendered from.  That covers other
+  BufReadCmd-style plugins that fill a buffer from a callback and announce
+  nothing, and it does not depend on the fill changing how many lines there
+  are -- a one-line file replacing an empty buffer is caught as well.
 
 SimpleRemote's tree window ([SimpleRemote], 'buftype' nofile) is never a
 source, and entering it does not move the minimap away from the file beside

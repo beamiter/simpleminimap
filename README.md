@@ -305,14 +305,17 @@ SimpleMinimap 在其中不需要任何配置，也不要求安装 SimpleRemote�
 - **虚拟模式**把每个远端文件打开为名为 `remote:///abs/path` 的缓冲区：先是空的，稍后由 channel
   回调异步填充，并把 `buftype` 置为 `acwrite`（写回走 `BufWriteCmd`），检测 filetype 后触发
   `User SimpleRemoteBufferRead`（`g:simpleremote_event = {bufnr, path, workspace, …}`）。
-  - `acwrite` 是合法的源 `buftype`，所以 `remote://` 缓冲区像文件一样被跟随：只有它的标签页可以
-    `:SimpleMinimapOpen`，`g:simpleminimap_auto_open` 会为它打开，读取完成后的 `buftype` 变化
-    既不会把 minimap 变成 “no editable window”，也不会在 `g:simpleminimap_auto_close` 下关掉它。
+  - `acwrite` 是合法的源 `buftype`，所以 `remote://` 缓冲区像文件一样被跟随：标签页里只有这样一个
+    窗口时 `:SimpleMinimapOpen` 同样能打开（普通标签页一如既往），`g:simpleminimap_auto_open` 也会
+    为它打开；读取完成后的 `buftype` 变化既不会把 minimap 变成 “no editable window”，也不会在
+    `g:simpleminimap_auto_close` 下关掉它。
   - 插件监听 `User SimpleRemoteBufferRead`，为显示 `g:simpleremote_event.bufnr` 的每个 session
     安排重绘，填充后的内容不用等下一次按键就出现（回调里的 `setbufline()` 不触发 `TextChanged`）。
     与该事件无关的通用保底：源窗口上的 `BufEnter` / `WinEnter` / `buftype`、`filetype` 的
-    `OptionSet` 都会把缓冲区行数与当前渲染所依据的行数比较，不一致就重绘——任何从回调里填充
-    缓冲区的 `BufReadCmd` 类插件都因此受益。
+    `OptionSet` 都会把缓冲区行数**和** `b:changedtick` 与当前这帧渲染所依据的值比较，任一不同就
+    重绘。行数没变的填充（比如一行的远端文件替换掉空缓冲区）因此同样会被发现，任何从回调里
+    填充缓冲区的 `BufReadCmd` 类插件都受益，且不依赖谁来广播事件；两者都没变时只刷新视口，
+    不发请求。
 - SimpleRemote 的树窗口（`[SimpleRemote]`，`buftype=nofile`）永远不会成为源；进入它不会把 minimap
   从旁边的文件上带走。signs / 搜索 / quickfix / marks / diff 叠加层在 `remote://` 缓冲区上与本地
   完全一致：它们只读缓冲区状态，从不看路径。

@@ -921,6 +921,7 @@ def RenderMessage(key: string, message_lines: list<string>)
   endwhile
   session.rows = []
   session.source_lines = 0
+  session.source_tick = 0
   session.last_signature = ''
   SetBufferLines(session.bufnr, output)
   ClearShading(key)
@@ -1320,6 +1321,12 @@ def BuildRequestBody(key: string): dict<any>
     return {}
   endif
   var source_lines = max([1, get(source_info[0], 'linecount', 1)])
+  # The buffer state this request is about to be built from.  Recorded here and
+  # not where the response lands, because the response is applied only while it
+  # is still the session's current request (BackendOut() drops a superseded
+  # id), so this is exactly the state the rows on screen will correspond to
+  # even if the buffer changes again while the daemon is working.
+  session.request_tick = BufferTick(session.source_bufnr)
   var row_count = RowCountFor(height, source_lines)
   var max_columns = Clamp(get(g:, 'simpleminimap_max_columns', 120), 20, 1000)
   var tabstop = Clamp(getbufvar(session.source_bufnr, '&tabstop'), 1, 64)
@@ -1468,6 +1475,13 @@ def RenderSession(key: string)
   if !force && !empty(session.rows) && signature ==# get(session, 'last_signature', '')
     # The daemon would produce identical output; refresh the overlays only.
     session.render_skips = get(session, 'render_skips', 0) + 1
+    # The rows on screen do match this buffer state -- the signature says so --
+    # so they are up to date as of this 'changedtick' too.  Without this, a
+    # change that leaves the rendered output identical (a save, an undo/redo
+    # pair, an edit past the sampled columns) would leave the recorded tick
+    # behind for ever and make every later BufEnter/WinEnter rebuild this same
+    # no-op request.
+    session.source_tick = get(session, 'request_tick', 0)
     UpdateOverlays(key)
     UpdateViewport(key)
     UpdateSearch(key)
@@ -2291,6 +2305,7 @@ def ApplyRows(key: string, rows: list<any>, source_lines: number)
 
   session.rows = rows
   session.source_lines = source_lines
+  session.source_tick = get(session, 'request_tick', 0)
   session.last_signature = get(session, 'request_signature', '')
   session.render_count = get(session, 'render_count', 0) + 1
   var started = get(session, 'request_started', [])
@@ -2529,6 +2544,8 @@ def OpenForCurrentTab()
       pinned: false,
       rows: [],
       source_lines: 0,
+      source_tick: 0,
+      request_tick: 0,
       request_id: 0,
       timer: 0,
       viewport_match: -1,
@@ -3215,7 +3232,16 @@ export def ScrollSource(direction: number)
 enddef
 
 
-# True when the source buffer has grown or shrunk since the rows on screen were
+# b:changedtick as a number, 0 when the buffer has none (it does not exist, or
+# Vim answered with the default).  Vim9 refuses to compare the `any` that
+# getbufvar() returns against a number when it came back a string.
+def BufferTick(bufnr: number): number
+  var tick = getbufvar(bufnr, 'changedtick', 0)
+  return type(tick) == v:t_number ? tick : 0
+enddef
+
+
+# True when the source buffer has changed since the rows on screen were
 # rendered.  A buffer filled from a callback -- SimpleRemote's virtual
 # remote:// files, any BufReadCmd plugin that calls setbufline() from a job or
 # timer -- fires no TextChanged, so the only edit-shaped signal the minimap
@@ -3223,11 +3249,23 @@ enddef
 # 'filetype', a BufEnter, a WinEnter).  Those all land in OnContextChanged(),
 # whose "same window, same buffer" branch used to refresh only the viewport
 # and leave the empty-buffer render standing until the next keypress.
-# session.source_lines is what the last applied render was built from; the
-# comparison is against that rather than the pending request so that a
-# render still in flight is simply reissued (RenderSession() drops the
+#
+# Both halves of the comparison are recorded when a render is applied:
+# session.source_lines is the line count the rows were built from, and
+# session.source_tick the source buffer's b:changedtick at that moment.  The
+# line count alone was not enough -- filling an empty buffer with a one-line
+# file leaves the count at 1, and a fill that rewrites text without changing
+# how many lines there are is the ordinary case for a re-read -- so the
+# safeguard used to catch only length changes and leave everything else to
+# SimpleRemote's own User SimpleRemoteBufferRead.  Every setbufline() /
+# deletebufline() / setline() bumps 'changedtick', including from a callback,
+# so the check no longer depends on a sibling announcing anything, while a
+# buffer nobody touched still matches on both halves and costs no request.
+#
+# The comparison is against the applied render rather than the pending one so
+# that a render still in flight is simply reissued (RenderSession() drops the
 # superseded id) instead of being trusted blindly.
-def SourceLinesStale(session: dict<any>, bufnr: number): bool
+def SourceStale(session: dict<any>, bufnr: number): bool
   var rendered = get(session, 'source_lines', 0)
   if rendered <= 0 || empty(get(session, 'rows', []))
     return false
@@ -3236,7 +3274,17 @@ def SourceLinesStale(session: dict<any>, bufnr: number): bool
   if empty(info)
     return false
   endif
-  return max([1, get(info[0], 'linecount', 1)]) != rendered
+  if max([1, get(info[0], 'linecount', 1)]) != rendered
+    return true
+  endif
+  # 0 means "never recorded": a session whose rows predate this bookkeeping
+  # has nothing to compare against, and answering "stale" there would reissue
+  # a render on every BufEnter for ever.
+  var rendered_tick = get(session, 'source_tick', 0)
+  if rendered_tick <= 0
+    return false
+  endif
+  return BufferTick(bufnr) != rendered_tick
 enddef
 
 
@@ -3263,7 +3311,7 @@ export def OnContextChanged()
         session.source_bufnr = pinned_info.bufnr
         session.preview_origin = []
         if pinned_changed || empty(session.rows)
-            || SourceLinesStale(session, pinned_info.bufnr)
+            || SourceStale(session, pinned_info.bufnr)
           Schedule(key, 0)
         else
           UpdateViewport(key)
@@ -3304,9 +3352,10 @@ export def OnContextChanged()
   if changed || empty(session.rows)
     session.preview_origin = []
     Schedule(key, 0)
-  elseif SourceLinesStale(session, info.bufnr)
-    # Same window, same buffer, different length: the text changed behind the
-    # minimap's back.  Re-render now rather than after the next keystroke.
+  elseif SourceStale(session, info.bufnr)
+    # Same window, same buffer, different content: a different line count, or
+    # the same one with a newer 'changedtick'.  The text changed behind the
+    # minimap's back -- re-render now rather than after the next keystroke.
     Schedule(key, 0)
   else
     UpdateViewport(key)

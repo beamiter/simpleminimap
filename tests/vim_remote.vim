@@ -53,6 +53,7 @@ let s:remote_files = {
       \ '/srv/app/main.py': ['import os', '', 'def main():',
       \                       '    return os.getcwd()', '', 'main()'],
       \ '/srv/app/one.py': ['print("one line")'],
+      \ '/srv/app/two.py': ['print("second line")'],
       \ '/srv/app/util.py': ['def a():', '    pass', '', 'def b():', '    pass',
       \                       '', 'def c():', '    pass'],
       \ }
@@ -117,6 +118,16 @@ function! s:WaitForSourceLines(count) abort
   return get(s:Session(), 'source_lines', -1)
 endfunction
 
+" Waits until the session has applied at least `minimum` renders.
+function! s:WaitForRenders(minimum) abort
+  let attempt = 0
+  while get(s:Session(), 'render_count', 0) < a:minimum && attempt < 200
+    sleep 20m
+    let attempt += 1
+  endwhile
+  return get(s:Session(), 'render_count', 0)
+endfunction
+
 function! s:WaitForReads(count) abort
   let attempt = 0
   while len(s:reads) < a:count && attempt < 200
@@ -170,10 +181,14 @@ call assert_equal(1, len(simpleminimap#DebugStatus().sessions),
 let g:simpleminimap_auto_close = 0
 
 " ---------------------------------------------------------------------------
-" 2. Same length, different text: only the User event can tell.
+" 2. Same length, different text.
 "
-" A one-line remote file replaces the one-line empty buffer, so the length
-" safeguard has nothing to notice; SimpleRemoteBufferRead is what re-renders.
+" A one-line remote file replaces the one-line empty buffer, so a safeguard
+" that compares line counts alone has nothing to notice.  Two independent
+" signals do notice it: the User event SimpleRemote fires, and the buffer's
+" b:changedtick, which every setbufline() from a callback bumps.  The real
+" sequence has both; 2a and 2b below each take one of them away, so neither
+" can pass on the other one's wiring.
 " ---------------------------------------------------------------------------
 edit remote:///srv/app/one.py
 let s:one_bufnr = bufnr()
@@ -194,6 +209,89 @@ call assert_true(s:session.request_id > s:request_before,
       \ 'the re-render went to the daemon (the text changed, so did the signature)')
 call assert_equal(s:one_bufnr, s:session.source_bufnr)
 call assert_equal(1, s:session.source_lines)
+call assert_equal(getbufvar(s:one_bufnr, 'changedtick'), s:session.source_tick,
+      \ 'the applied render recorded the changedtick it was built from')
+
+" ---------------------------------------------------------------------------
+" 2a. The User event on its own.
+"
+" A callback rewrites the same number of lines and announces the fill.  No
+" option changes, no window is entered and no key is pressed, so the
+"   autocmd User SimpleRemoteBufferRead ... simpleminimap#OnTextChanged(...)
+" in plugin/simpleminimap.vim is the only path that can reach the minimap.
+" Delete that autocmd and this block fails.
+" ---------------------------------------------------------------------------
+enew!
+let s:announced_bufnr = bufnr()
+call setline(1, ['one', 'two', 'three'])
+call simpleminimap#OnTextChanged(s:announced_bufnr)
+call assert_equal(3, s:WaitForSourceLines(3), 'the announced buffer rendered first')
+let s:renders_before = s:Session().render_count
+let s:tick_before = getbufvar(s:announced_bufnr, 'changedtick')
+function! s:RewriteAndAnnounce(bufnr, _timer) abort
+  call setbufline(a:bufnr, 1, ['ONE', 'TWO', 'THREE'])
+  let g:simpleremote_event = {'event': 'SimpleRemoteBufferRead',
+        \ 'type': 'buffer-read', 'bufnr': a:bufnr, 'path': '/srv/app/three.py',
+        \ 'workspace': copy(g:simpleremote_workspace),
+        \ 'status': g:simpleremote_status, 'time': localtime()}
+  silent! doautocmd <nomodeline> User SimpleRemoteBufferRead
+  let g:simpleminimap_test_grown = 1
+endfunction
+let g:simpleminimap_test_grown = 0
+call timer_start(0, function('s:RewriteAndAnnounce', [s:announced_bufnr]))
+let s:attempt = 0
+while !g:simpleminimap_test_grown && s:attempt < 200
+  sleep 20m
+  let s:attempt += 1
+endwhile
+call assert_equal(3, len(getbufline(s:announced_bufnr, 1, '$')),
+      \ 'the rewrite kept the line count (premise: only the event can tell)')
+call assert_true(getbufvar(s:announced_bufnr, 'changedtick') > s:tick_before)
+call assert_true(s:WaitForRenders(s:renders_before + 1) > s:renders_before,
+      \ 'User SimpleRemoteBufferRead alone re-rendered a same-length rewrite')
+
+" ---------------------------------------------------------------------------
+" 2b. b:changedtick on its own.
+"
+" The same one-line-for-one-line fill, announced by nothing at all -- the
+" BufReadCmd plugin that never heard of this one.  The 'buftype' flip lands in
+" OnContextChanged(), where the window, the buffer and the line count are all
+" unchanged, so the changedtick recorded with the rows on screen is the only
+" thing that can say the text moved.  Compare line counts alone and this stays
+" on the empty-buffer render until a key is pressed.
+" ---------------------------------------------------------------------------
+edit remote:///srv/app/two.py
+let s:two_bufnr = bufnr()
+call assert_equal(1, s:WaitForSourceLines(1), 'the empty two.py buffer rendered')
+let s:renders_before = s:Session().render_count
+let s:request_before = s:Session().request_id
+let s:tick_before = getbufvar(s:two_bufnr, 'changedtick')
+let s:reads_before = len(s:reads)
+call timer_start(0, function('s:ApplyRemoteRead', [s:two_bufnr, 0]))
+call assert_equal(s:reads_before + 1, s:WaitForReads(s:reads_before + 1))
+call assert_false(exists('g:simpleremote_event')
+      \ && g:simpleremote_event.bufnr == s:two_bufnr,
+      \ 'this scenario announced nothing')
+call assert_equal(1, len(getbufline(s:two_bufnr, 1, '$')),
+      \ 'the fill kept the line count at 1 (premise)')
+call assert_true(getbufvar(s:two_bufnr, 'changedtick') > s:tick_before)
+call assert_true(s:WaitForRenders(s:renders_before + 1) > s:renders_before,
+      \ 'a same-length unannounced fill re-rendered on the buftype flip alone')
+let s:session = s:Session()
+call assert_true(s:session.request_id > s:request_before,
+      \ 'the re-render reached the daemon: the text changed, so did the signature')
+call assert_equal(s:two_bufnr, s:session.source_bufnr)
+call assert_equal(1, s:session.source_lines)
+call assert_equal(getbufvar(s:two_bufnr, 'changedtick'), s:session.source_tick)
+
+" And the catch-up settles: nothing more happens on a further WinEnter.
+let s:renders_before = s:Session().render_count
+let s:request_before = s:Session().request_id
+doautocmd <nomodeline> WinEnter
+sleep 50m
+call assert_equal(s:renders_before, s:Session().render_count,
+      \ 'the caught-up buffer is not re-rendered again')
+call assert_equal(s:request_before, s:Session().request_id)
 
 " ---------------------------------------------------------------------------
 " 3. No User event at all: the generic safeguard.
@@ -254,6 +352,39 @@ call assert_equal(s:renders_before, s:Session().render_count,
       \ 'an unchanged buffer is not re-rendered on WinEnter')
 call assert_equal(s:request_before, s:Session().request_id,
       \ 'nor is a request sent for it')
+
+" A change whose rendered output is identical -- the same 20 lines written
+" again from a callback -- costs one signature check and then settles: the
+" skip path records the changedtick it has just proved the rows match.  Without
+" that record the tick would stay behind for ever and every later WinEnter
+" would rebuild the request body again.
+function! s:RewriteSameFromCallback(bufnr, _timer) abort
+  call setbufline(a:bufnr, 1, map(range(1, 20), 'printf("grown %02d", v:val)'))
+  let g:simpleminimap_test_grown = 1
+endfunction
+let g:simpleminimap_test_grown = 0
+let s:tick_before = getbufvar(s:plain_bufnr, 'changedtick')
+call timer_start(0, function('s:RewriteSameFromCallback', [s:plain_bufnr]))
+let s:attempt = 0
+while !g:simpleminimap_test_grown && s:attempt < 200
+  sleep 20m
+  let s:attempt += 1
+endwhile
+call assert_true(getbufvar(s:plain_bufnr, 'changedtick') > s:tick_before,
+      \ 'rewriting the same text still bumps changedtick (premise)')
+let s:skips_before = s:Session().render_skips
+let s:request_before = s:Session().request_id
+doautocmd <nomodeline> WinEnter
+sleep 100m
+call assert_equal(s:skips_before + 1, s:Session().render_skips,
+      \ 'the identical render was recognised by the signature, not sent')
+call assert_equal(s:request_before, s:Session().request_id,
+      \ 'so no request went out for it')
+let s:skips_before = s:Session().render_skips
+doautocmd <nomodeline> WinEnter
+sleep 100m
+call assert_equal(s:skips_before, s:Session().render_skips,
+      \ 'and the skip recorded the tick, so the next WinEnter costs nothing')
 
 " ---------------------------------------------------------------------------
 " 4. A pinned split follows the same rule.

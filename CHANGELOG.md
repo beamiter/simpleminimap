@@ -32,6 +32,30 @@ All notable changes to SimpleMinimap are documented here.
   `|simpleminimap-simpleremote|` 一节,`|simpleminimap-design|` 与排错一节的
   `buftype` 规则同步更新。
 
+### 评审跟进
+
+- 通用保底不再只看行数。`SourceLinesStale()` 拿缓冲区当前行数与当前这帧渲染所依据的
+  `session.source_lines` 比较,行数没变的异步填充就完全看不见:实测用一个
+  `BufReadCmd` 桩打开空缓冲区(1 行)、再由定时器回调填入一行内容并把 `buftype` 置为
+  `acwrite`,行数始终是 1,`OptionSet buftype` 走到 `OnContextChanged()` 只刷新了视口,
+  `render_count` 停在 2,minimap 一直显示空缓冲区那一帧,直到用户按键。SimpleRemote
+  自己有 `User SimpleRemoteBufferRead` 兜底,所以这只咬到别的 `BufReadCmd` / job 填充
+  型插件——以及万一 SimpleRemote 不再广播该事件的情况。现在改名为 `SourceStale()`,
+  同时比较 `b:changedtick`:`BuildRequestBody()` 在构造请求时把当时的 tick 记进
+  `session.request_tick`(响应只在仍是本 session 当前请求时才会被应用,所以这正是屏幕
+  上这帧对应的缓冲区状态),`ApplyRows()` 落帧时写入 `session.source_tick`。行数与 tick
+  都没变时依旧只刷新视口、不发请求。
+- 签名命中(daemon 会给出完全相同的输出,于是跳过发送)的那条路径同样记录 tick。否则
+  一次“内容不变但 tick 变了”的改动(保存、undo/redo 一来一回、超出采样列宽的编辑)会
+  让记录的 tick 永远落后,此后每一次 `BufEnter` / `WinEnter` 都白白重建一次请求体。
+- `tests/vim_remote.vim` 把两条路径分开钉住:2a 只用 `User SimpleRemoteBufferRead`
+  (回调改写同样行数的文本,不动任何选项、不进任何窗口),删掉 `plugin/simpleminimap.vim`
+  里那条 autocmd 即失败;2b 只靠 `b:changedtick`(一行换一行、什么都不广播),去掉 tick
+  比较即失败。另加一条断言:内容不变的重写只花一次签名比对,第二次 `WinEnter` 零开销。
+- README 的中文表述与 help 相反。原文“只有它的标签页可以 `:SimpleMinimapOpen`”会被读成
+  “只有 `remote://` 标签页才能开 minimap”,把新增能力写成了限制;help 说的是“标签页里
+  只有这样一个窗口时也能开”。已按 help 与 CHANGELOG 的说法改写。
+
 ## Unreleased - 2026-08-08
 
 ### 修复
