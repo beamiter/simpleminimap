@@ -35,6 +35,27 @@ call assert_equal(0, len(simpleminimap#DebugStatus().sessions))
 set filetype=
 let g:simpleminimap_ignore_filetypes = []
 
+" 'acwrite' marks a real document whose reads and writes go through
+" BufReadCmd/BufWriteCmd instead of the filesystem -- SimpleRemote's virtual
+" remote:// buffers, netrw's scp:// buffers -- so it is followed like a plain
+" file.  Every other non-empty 'buftype' is a view or a tool and is not.
+call setline(1, ['acwrite one', 'acwrite two'])
+setlocal buftype=acwrite
+SimpleMinimapOpen
+call assert_equal(1, len(simpleminimap#DebugStatus().sessions),
+      \ 'an acwrite buffer is an eligible minimap source')
+call assert_equal(bufnr(), values(simpleminimap#DebugStatus().sessions)[0].source_bufnr)
+SimpleMinimapClose
+call assert_equal(0, len(simpleminimap#DebugStatus().sessions))
+for s:buftype in ['nofile', 'nowrite', 'help', 'quickfix', 'prompt', 'popup']
+  execute 'setlocal buftype=' .. s:buftype
+  SimpleMinimapOpen
+  call assert_equal(0, len(simpleminimap#DebugStatus().sessions),
+        \ 'buftype=' .. s:buftype .. ' is not an eligible minimap source')
+endfor
+setlocal buftype=
+setlocal nomodified
+
 " Closing the source can leave the minimap as Vim's final window.  Closing the
 " plugin must restore a usable normal window instead of throwing E444.
 call setline(1, ['source one', 'source two'])

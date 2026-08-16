@@ -2,6 +2,36 @@
 
 All notable changes to SimpleMinimap are documented here.
 
+## Unreleased - 2026-08-16
+
+### SimpleRemote 协作
+
+- `buftype=acwrite` 的缓冲区现在是合法的 minimap 源。此前 `IsEligibleSourceWindow()`
+  只接受空 `buftype`,而 SimpleRemote 虚拟模式的每个 `remote://` 缓冲区在异步读取
+  完成后都会被置为 `acwrite`(写回走 `BufWriteCmd`):实测在 SSH 工作区里
+  `:edit remote:///srv/app/main.py` 之后 minimap 先接管空缓冲区,读取一落地就变成
+  “no editable window”(`g:simpleminimap_auto_close=1` 时直接关闭),只有 `remote://`
+  窗口的标签页 `:SimpleMinimapOpen` 报 “no normal file window is available”,自动打开
+  也永远不触发。`acwrite` 恰好就是“由插件自己读写的真实文档”(netrw 的 `scp://`、
+  fugitive 的 index 缓冲区同理),help / terminal / quickfix / prompt / nofile 依旧被
+  跳过——SimpleRemote 的树窗口是 `nofile`,不受影响。
+- 远端读取落地后立即重绘,不再等下一次按键。SimpleRemote 用 `setbufline()` 从
+  channel 回调里填充缓冲区,这不会触发 `TextChanged`,于是即便源合法,minimap 也停在
+  空缓冲区那一帧。两条互补的路径:(a) 监听 `User SimpleRemoteBufferRead`,对显示
+  `g:simpleremote_event.bufnr` 的每个 session 调 `simpleminimap#OnTextChanged()`
+  ——覆盖内容变了但行数没变的情况;(b) 通用保底:`OnContextChanged()` 的“同一窗口、
+  同一缓冲区”分支此前只刷新视口,现在若缓冲区行数与当前这帧渲染所依据的
+  `source_lines` 不一致就立即重绘,锁定的分屏同样适用——SimpleRemote 置 `acwrite`
+  触发的 `OptionSet buftype` 就走这条路,任何从回调里填充缓冲区的 `BufReadCmd` 类
+  插件都因此受益,不需要知道 minimap 的存在。行数一致时依旧只刷新视口,不发请求。
+- 未安装 SimpleRemote 时一切照旧:`User SimpleRemoteBufferRead` 的 autocmd 无人
+  触发,`g:simpleremote_event` 缺失或指向别的缓冲区时也不做任何事。测试不把
+  SimpleRemote 放进 runtimepath,而是用 `BufReadCmd remote://*` 桩 + 定时器回调复现
+  同一串调用(`tests/vim_remote.vim`,`make test-vim-remote`);该文件从 stdin 喂给
+  Vim 而不是 `-S`,因为 Vim 在启动阶段不触发 `OptionSet`。help 增加
+  `|simpleminimap-simpleremote|` 一节,`|simpleminimap-design|` 与排错一节的
+  `buftype` 规则同步更新。
+
 ## Unreleased - 2026-08-08
 
 ### 修复

@@ -31,7 +31,10 @@ SimpleMinimap 是一个面向 **Vim 9** 的右侧代码缩略图插件。它参�
   error/warning/info/git add/change/delete 并使用各自的高亮组，同一行取最高严重级。
 - `hlsearch` 激活时把搜索匹配投影到 minimap（需要 Vim 9.1.0009+ 的
   `matchbufline()`，不满足时静默禁用）。
-- 跟随当前标签页最近进入的普通编辑窗口；切换缓冲区、编辑、保存、改变 `tabstop` 或调整窗口大小时自动更新。
+- 跟随当前标签页最近进入的可编辑窗口（`buftype` 为空或 `acwrite`）；切换缓冲区、编辑、保存、改变 `tabstop` 或调整窗口大小时自动更新。
+- 与 [SimpleRemote](https://github.com/beamiter/simpleremote) 协作：虚拟模式的 `remote://` 缓冲区
+  被当作普通文件跟随，远端读取完成（`User SimpleRemoteBufferRead`）后无需按键即刻重绘；
+  未安装 SimpleRemote 时这些钩子完全不起作用。
 - 多分屏时可把 minimap 锁定到当前源分屏，查看其他窗口不会带走概览；源分屏失效时自动安全解锁。
 - 支持键盘预览/跳转、鼠标滚轮滚动，以及按住左键拖动视口；跳转会进入 Vim jump list。
 - 运行时可切换 Braille/Block/ASCII、调整宽度，也可把 minimap 放到左侧。
@@ -200,7 +203,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_shading` | `1` | 是否按密度给 minimap 单元格分档着色（需要 `+textprop`） |
 | `g:simpleminimap_colors` | `0` | 是否按语法类别（注释/字符串/关键字/类型）给单元格上色；纯代码单元格仍用密度分档。需要 `+syntax` 和 `g:simpleminimap_shading`。每条样本行一次 `synID()`，且编辑会失效其下方所有区间的分类，因此默认关闭 |
 | `g:simpleminimap_ignore_filetypes` | `[]` | 不跟随的 filetype 列表 |
-| `g:simpleminimap_auto_close` | `0` | 当前标签页没有普通编辑窗口时是否自动关闭 |
+| `g:simpleminimap_auto_close` | `0` | 当前标签页没有可跟随的窗口（`buftype` 为空或 `acwrite`，且 filetype 不在忽略列表）时是否自动关闭 |
 | `g:simpleminimap_auto_open` | `0` | Vim 启动或进入标签页时自动打开 |
 | `g:simpleminimap_auto_restart` | `1` | 后台异常退出（或连续超时卡死）时自动重启，60 秒滚动窗口内最多 3 次；用尽后熔断，只有 `:SimpleMinimapRestart` 能恢复；设为 `0` 时任何路径都不会自动拉起进程 |
 | `g:simpleminimap_request_timeout_ms` | `5000` | 单次渲染请求的超时（毫秒，限制 `100..600000`）；连续两次超时会重启 daemon，且与崩溃共用同一份重启预算，设为 `0` 关闭 |
@@ -292,6 +295,28 @@ augroup END
 
 因此，Vim 与后台之间传输的数据量由窗口高度和列数限制，而不是直接随文件总行数增长。
 
+## 远程工作区（SimpleRemote）
+
+[SimpleRemote](https://github.com/beamiter/simpleremote) 在 Vim 里打开 SSH / Docker 工作区。
+SimpleMinimap 在其中不需要任何配置，也不要求安装 SimpleRemote——所有钩子都是特性探测的，
+没有人触发时就是空操作。
+
+- **投影模式**（sshfs / docker-bind / local-map）打开的是本地路径下的普通文件，minimap 原样跟随。
+- **虚拟模式**把每个远端文件打开为名为 `remote:///abs/path` 的缓冲区：先是空的，稍后由 channel
+  回调异步填充，并把 `buftype` 置为 `acwrite`（写回走 `BufWriteCmd`），检测 filetype 后触发
+  `User SimpleRemoteBufferRead`（`g:simpleremote_event = {bufnr, path, workspace, …}`）。
+  - `acwrite` 是合法的源 `buftype`，所以 `remote://` 缓冲区像文件一样被跟随：只有它的标签页可以
+    `:SimpleMinimapOpen`，`g:simpleminimap_auto_open` 会为它打开，读取完成后的 `buftype` 变化
+    既不会把 minimap 变成 “no editable window”，也不会在 `g:simpleminimap_auto_close` 下关掉它。
+  - 插件监听 `User SimpleRemoteBufferRead`，为显示 `g:simpleremote_event.bufnr` 的每个 session
+    安排重绘，填充后的内容不用等下一次按键就出现（回调里的 `setbufline()` 不触发 `TextChanged`）。
+    与该事件无关的通用保底：源窗口上的 `BufEnter` / `WinEnter` / `buftype`、`filetype` 的
+    `OptionSet` 都会把缓冲区行数与当前渲染所依据的行数比较，不一致就重绘——任何从回调里填充
+    缓冲区的 `BufReadCmd` 类插件都因此受益。
+- SimpleRemote 的树窗口（`[SimpleRemote]`，`buftype=nofile`）永远不会成为源；进入它不会把 minimap
+  从旁边的文件上带走。signs / 搜索 / quickfix / marks / diff 叠加层在 `remote://` 缓冲区上与本地
+  完全一致：它们只读缓冲区状态，从不看路径。
+
 ## 后台协议
 
 协议（v3）是 UTF-8、TAB 分隔、逐行传输。TAB、换行、回车和 `%` 使用 `%XX` 转义。
@@ -323,6 +348,7 @@ make lint            # clippy -D warnings
 make test-rust       # Rust 单元测试
 make test-daemon     # release 后台 CLI 与内置自测
 make test-vim        # Vim + Python mock 后台
+make test-vim-remote # 模拟 SimpleRemote 虚拟工作区（remote:// + acwrite + 异步填充）
 make test-vim-real   # Vim + release Rust 后台
 make test            # 全部测试
 ```

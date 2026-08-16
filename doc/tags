@@ -78,5 +78,6 @@ simpleminimap-mappings	simpleminimap.txt	/*simpleminimap-mappings*
 simpleminimap-options	simpleminimap.txt	/*simpleminimap-options*
 simpleminimap-requirements	simpleminimap.txt	/*simpleminimap-requirements*
 simpleminimap-simplecore	simpleminimap.txt	/*simpleminimap-simplecore*
+simpleminimap-simpleremote	simpleminimap.txt	/*simpleminimap-simpleremote*
 simpleminimap-troubleshooting	simpleminimap.txt	/*simpleminimap-troubleshooting*
 simpleminimap.txt	simpleminimap.txt	/*simpleminimap.txt*

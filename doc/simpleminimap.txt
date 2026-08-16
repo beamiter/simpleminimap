@@ -11,6 +11,7 @@ CONTENTS                                              *simpleminimap-contents*
   6. Highlights ................................ |simpleminimap-highlights|
   7. Design .................................... |simpleminimap-design|
   8. Troubleshooting ........................... |simpleminimap-troubleshooting|
+  9. Remote workspaces ......................... |simpleminimap-simpleremote|
 
 ==============================================================================
 1. INTRODUCTION                                   *simpleminimap-introduction*
@@ -377,8 +378,9 @@ All options must be set before the plugin is loaded.
         the list are not eligible source windows.
 
 *g:simpleminimap_auto_close*
-        Boolean number, default 0.  Close the minimap when its tab has no normal
-        editable window.  With zero, the minimap remains and shows a message.
+        Boolean number, default 0.  Close the minimap when its tab has no
+        eligible source window (see |simpleminimap-design|).  With zero, the
+        minimap remains and shows a message.
 
 *g:simpleminimap_auto_open*
         Boolean number, default 0.  Open a minimap on VimEnter and TabEnter
@@ -477,11 +479,19 @@ ColorScheme autocommand to override them.
 7. DESIGN                                               *simpleminimap-design*
 
 One session is maintained per tab.  The session follows the most recently
-entered eligible normal window in that tab, unless pinned with
-|:SimpleMinimapPin|.  A pin belongs to the source window rather than its
-buffer: wiping that buffer keeps the pin when Vim loads another eligible
-buffer into the same window.  TextChanged, TextChangedI,
-BufWritePost, WinResized, WinScrolled and tabstop changes schedule an update.
+entered eligible window in that tab, unless pinned with |:SimpleMinimapPin|.
+A window is eligible when its buffer's 'buftype' is empty or "acwrite" -- a
+file, or a document read and written through BufReadCmd/BufWriteCmd such as
+a SimpleRemote remote:// buffer -- and its 'filetype' is not listed in
+|g:simpleminimap_ignore_filetypes|.  A pin belongs to the source window
+rather than its buffer: wiping that buffer keeps the pin when Vim loads
+another eligible buffer into the same window.  TextChanged, TextChangedI,
+BufWritePost, WinResized, WinScrolled, tabstop changes and SimpleRemote's
+User SimpleRemoteBufferRead schedule an update.  Re-entering the source
+window -- BufEnter, WinEnter, or an OptionSet on 'buftype' or 'filetype' --
+compares the buffer's line count with the one the rows on screen were
+rendered from and re-renders on a mismatch, which catches a buffer that was
+filled from a job or timer callback without any TextChanged.
 
 The source is divided into at most one group per minimap screen row.  A group
 contains four representative source lines.  Adaptive mode chooses among three
@@ -528,8 +538,12 @@ Blank or missing Braille glyphs
 <       Use "ascii" for terminals without Unicode block characters.
 
 The minimap does not follow a window
-        Only normal buffers with an empty 'buftype' are followed.  Help,
-        terminal, quickfix and plugin scratch windows are intentionally skipped.
+        Only buffers whose 'buftype' is empty or "acwrite" are followed:
+        files, and documents that a plugin reads and writes itself, such as
+        SimpleRemote's remote:// buffers or netrw's scp:// buffers.  Help,
+        terminal, quickfix, prompt and plugin scratch (nofile) windows are
+        intentionally skipped, as is any 'filetype' listed in
+        |g:simpleminimap_ignore_filetypes|.
 
 Inspect state
         Run |:SimpleMinimapHealth| and |:SimpleMinimapDebug|.  Enable
@@ -551,6 +565,44 @@ The minimap froze but the daemon looks fine
         |g:simpleminimap_request_timeout_ms|.  Repeated crashes -- and repeated
         timeouts -- trip the crash-loop breaker, which Health reports as
         tripped, with the reason, and |:SimpleMinimapRestart| clears.
+
+==============================================================================
+9. REMOTE WORKSPACES                               *simpleminimap-simpleremote*
+
+SimpleRemote (https://github.com/beamiter/simpleremote) opens SSH and Docker
+workspaces in Vim.  SimpleMinimap needs no configuration to work in one, and
+nothing here requires SimpleRemote to be installed: every hook is inert when
+nothing fires it.
+
+Projected modes (sshfs, docker-bind, local-map) open ordinary local files
+under the workspace's local root, which the minimap follows unchanged.
+
+Virtual mode opens each remote file as a buffer named remote:///abs/path.
+Such a buffer starts empty; SimpleRemote fills it asynchronously from a
+channel callback, sets its 'buftype' to "acwrite" -- writes go back through
+BufWriteCmd rather than to a local path -- detects the filetype and fires
+User SimpleRemoteBufferRead with g:simpleremote_event = {bufnr, path,
+workspace, ...}.  Two things follow from that:
+
+- "acwrite" is an eligible 'buftype' (see |simpleminimap-design|), so a
+  remote:// buffer is followed like a file: |:SimpleMinimapOpen| works in a
+  tab whose only window shows one, |g:simpleminimap_auto_open| opens for it,
+  and the 'buftype' flip after the read neither blanks the minimap with
+  "no editable window" nor closes it under |g:simpleminimap_auto_close|.
+- The plugin listens for User SimpleRemoteBufferRead and schedules a
+  re-render of every session showing g:simpleremote_event.bufnr, so the
+  filled text appears without waiting for the next keypress (a callback's
+  setbufline() fires no TextChanged).  Independently of that event, any
+  BufEnter, WinEnter or 'buftype'/'filetype' OptionSet on the source window
+  re-renders when the buffer's line count no longer matches the rows on
+  screen, which covers other BufReadCmd-style plugins that fill a buffer
+  from a callback.
+
+SimpleRemote's tree window ([SimpleRemote], 'buftype' nofile) is never a
+source, and entering it does not move the minimap away from the file beside
+it.  Overlays (signs, search, quickfix, marks, diff) work on remote://
+buffers exactly as on local ones: they read buffer state, not the
+filesystem.
 
 ==============================================================================
 

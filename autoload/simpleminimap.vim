@@ -38,6 +38,13 @@ const OVERLAY_GROUPS = {
 const DIFF_MAX_PROBE_LINES = 20000
 const DEFAULT_OVERLAYS = ['signs', 'search']
 const BUILTIN_OVERLAYS = ['signs', 'search', 'quickfix', 'loclist', 'marks', 'diff']
+# The 'buftype' values a source window may have.  '' is an ordinary file.
+# 'acwrite' is a real document whose reads and writes go through BufReadCmd /
+# BufWriteCmd instead of the filesystem -- SimpleRemote's virtual remote://
+# buffers, netrw's scp:// buffers and the like -- and it is exactly what a
+# minimap is for.  Everything else (help, terminal, quickfix, nofile,
+# prompt, popup) is a view or a tool, not a document, and is skipped.
+const SOURCE_BUFTYPES = ['', 'acwrite']
 # Density shade classes reported per rendered cell by the daemon.
 const SHADE_TYPES = {
   '1': 'SimpleMinimapShadeLow',
@@ -212,7 +219,7 @@ def IsEligibleSourceWindow(winid: number): bool
     return false
   endif
   var buftype = getbufvar(info.bufnr, '&buftype')
-  if type(buftype) != v:t_string || buftype !=# ''
+  if type(buftype) != v:t_string || index(SOURCE_BUFTYPES, buftype) < 0
     return false
   endif
   var ignored = get(g:, 'simpleminimap_ignore_filetypes', [])
@@ -3208,6 +3215,31 @@ export def ScrollSource(direction: number)
 enddef
 
 
+# True when the source buffer has grown or shrunk since the rows on screen were
+# rendered.  A buffer filled from a callback -- SimpleRemote's virtual
+# remote:// files, any BufReadCmd plugin that calls setbufline() from a job or
+# timer -- fires no TextChanged, so the only edit-shaped signal the minimap
+# receives is whatever re-enters the window next (an OptionSet on 'buftype' or
+# 'filetype', a BufEnter, a WinEnter).  Those all land in OnContextChanged(),
+# whose "same window, same buffer" branch used to refresh only the viewport
+# and leave the empty-buffer render standing until the next keypress.
+# session.source_lines is what the last applied render was built from; the
+# comparison is against that rather than the pending request so that a
+# render still in flight is simply reissued (RenderSession() drops the
+# superseded id) instead of being trusted blindly.
+def SourceLinesStale(session: dict<any>, bufnr: number): bool
+  var rendered = get(session, 'source_lines', 0)
+  if rendered <= 0 || empty(get(session, 'rows', []))
+    return false
+  endif
+  var info = getbufinfo(bufnr)
+  if empty(info)
+    return false
+  endif
+  return max([1, get(info[0], 'linecount', 1)]) != rendered
+enddef
+
+
 export def OnContextChanged()
   if internal_change
     return
@@ -3231,6 +3263,7 @@ export def OnContextChanged()
         session.source_bufnr = pinned_info.bufnr
         session.preview_origin = []
         if pinned_changed || empty(session.rows)
+            || SourceLinesStale(session, pinned_info.bufnr)
           Schedule(key, 0)
         else
           UpdateViewport(key)
@@ -3270,6 +3303,10 @@ export def OnContextChanged()
   session.source_bufnr = info.bufnr
   if changed || empty(session.rows)
     session.preview_origin = []
+    Schedule(key, 0)
+  elseif SourceLinesStale(session, info.bufnr)
+    # Same window, same buffer, different length: the text changed behind the
+    # minimap's back.  Re-render now rather than after the next keystroke.
     Schedule(key, 0)
   else
     UpdateViewport(key)

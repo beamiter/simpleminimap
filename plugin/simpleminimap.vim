@@ -147,6 +147,11 @@ augroup SimpleMinimap
   # statusline manager that rewrites &l:statusline cannot blank the minimap.
   autocmd BufWinEnter,WinEnter * try | call simpleminimap#ReassertWindow(win_getid()) | catch | endtry
   autocmd TextChanged,TextChangedI,BufWritePost * try | call simpleminimap#OnTextChanged(str2nr(expand('<abuf>'))) | catch | endtry
+  # SimpleRemote fills a virtual remote:// buffer with setbufline() from a
+  # channel callback, which fires no TextChanged; it announces the fill with
+  # this User event and names the buffer in g:simpleremote_event.bufnr.
+  # Inert without SimpleRemote: nothing else fires the event.
+  autocmd User SimpleRemoteBufferRead try | call simpleminimap#OnTextChanged(get(get(g:, 'simpleremote_event', {}), 'bufnr', 0)) | catch | endtry
   autocmd CursorMoved,CursorMovedI * try | call simpleminimap#OnCursorMoved(win_getid()) | catch | endtry
   autocmd TabEnter * try | call simpleminimap#OnContextChanged() | catch | endtry
   autocmd TabEnter * try | call simpleminimap#MaybeAutoOpen() | catch | endtry
