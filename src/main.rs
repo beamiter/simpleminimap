@@ -14,7 +14,7 @@ const MAX_PROTOCOL_LINE_BYTES: usize = 64 * 1024;
 // two classes contribute the same number of dots to one rendered cell -- a
 // comment sharing a cell with plain code should read as a comment, because
 // that is the distinction the colour exists to draw.
-const CLASS_ORDER: [u8; 5] = [b'c', b's', b'k', b't', b'n'];
+const CLASS_ORDER: [u8; 5] = *b"csktn";
 const CLASS_NONE: u8 = b'n';
 
 #[derive(Debug)]
@@ -724,7 +724,7 @@ fn self_test() -> Result<(), String> {
                     "}".into(),
                     String::new(),
                 ],
-                classes: [b'k', b's', b'n', b'n'],
+                classes: *b"ksnn",
             },
             SampleGroup {
                 start: 5,
@@ -735,7 +735,7 @@ fn self_test() -> Result<(), String> {
                     String::new(),
                     String::new(),
                 ],
-                classes: [b'c', b'n', b'n', b'n'],
+                classes: *b"cnnn",
             },
         ],
     };
