@@ -118,7 +118,53 @@ function! s:WaitForVersion(expected) abort
   return simpleminimap#DebugStatus().daemon_version
 endfunction
 
-let s:probe = s:root .. '/tests/vim-version-probe.py'
+" A unique path matters when two checkouts/tests run concurrently: a fixed
+" tests/vim-version-probe.py lets one Vim rewrite or delete the executable
+" while the other still has a probe in flight, making Health fall back to the
+" bundled daemon and turning this timing test into a random failure.
+let s:probe_dir = tempname()
+call mkdir(s:probe_dir, 'p')
+let s:probe = s:probe_dir .. '/version-probe.py'
+
+" A child can inherit stdout and write after the direct probe process exited.
+" That is still the current generation and must replace the provisional
+" no-output diagnosis from exit_cb.
+call writefile(['#!/usr/bin/env python3',
+      \ 'import subprocess, sys',
+      \ 'subprocess.Popen([sys.executable, "-c",',
+      \ '  "import time; time.sleep(0.4); print(''simpleminimap-daemon DELAYED-CURRENT'', flush=True)"],',
+      \ '  stdout=sys.stdout)'], s:probe)
+call setfperm(s:probe, 'rwxr-xr-x')
+let g:simpleminimap_daemon_path = s:probe
+silent SimpleMinimapHealth
+call assert_equal('simpleminimap-daemon DELAYED-CURRENT',
+      \ s:WaitForVersion('DELAYED-CURRENT'),
+      \ 'buffered output after the direct probe exits is accepted')
+call simpleminimap#Stop()
+
+" The same delayed child becomes obsolete when a replacement probe starts;
+" its callback carries the old generation and must not overwrite the answer.
+call writefile(['#!/usr/bin/env python3',
+      \ 'import subprocess, sys',
+      \ 'subprocess.Popen([sys.executable, "-c",',
+      \ '  "import time; time.sleep(0.4); print(''simpleminimap-daemon LATE-OLD'', flush=True)"],',
+      \ '  stdout=sys.stdout)'], s:probe)
+call setfperm(s:probe, 'rwxr-xr-x')
+silent SimpleMinimapHealth
+sleep 50m
+call writefile(['#!/usr/bin/env python3',
+      \ '# replacement probe intentionally has a different size from the old one',
+      \ 'print("simpleminimap-daemon CURRENT-NEW")'], s:probe)
+call setfperm(s:probe, 'rwxr-xr-x')
+silent SimpleMinimapHealth
+call assert_equal('simpleminimap-daemon CURRENT-NEW', s:WaitForVersion('CURRENT-NEW'),
+      \ 'the replacement version probe wins')
+sleep 500m
+call assert_equal('simpleminimap-daemon CURRENT-NEW',
+      \ simpleminimap#DebugStatus().daemon_version,
+      \ 'late output from a superseded probe is ignored')
+call simpleminimap#Stop()
+
 call writefile(['#!/usr/bin/env python3',
       \ 'print("simpleminimap-daemon 0.1.0-OLD")'], s:probe)
 call setfperm(s:probe, 'rwxr-xr-x')
@@ -153,7 +199,35 @@ call simpleminimap#Stop()
 call assert_equal('', simpleminimap#DebugStatus().daemon_version,
       \ 'stopping the backend forgets the probed daemon version')
 
-call delete(s:probe)
+" Asynchronous is not enough for the diagnostic path: a binary wedged before
+" it prints --version would otherwise leave Health saying "probing…" and a job
+" alive for the rest of the Vim session.
+call writefile(['#!/usr/bin/env python3',
+      \ 'import signal',
+      \ 'import time',
+      \ 'signal.signal(signal.SIGTERM, signal.SIG_IGN)',
+      \ 'time.sleep(30)'], s:probe)
+call setfperm(s:probe, 'rwxr-xr-x')
+let s:started = reltime()
+silent SimpleMinimapHealth
+call assert_true(reltimefloat(reltime(s:started)) * 1000.0 < 500.0,
+      \ 'a hung version probe does not block Health')
+let s:attempt = 0
+while simpleminimap#DebugStatus().daemon_version_error ==# '' && s:attempt < 200
+  sleep 20m
+  let s:attempt += 1
+endwhile
+call assert_match('did not answer --version within 3000ms',
+      \ simpleminimap#DebugStatus().daemon_version_error,
+      \ 'a hung version probe reaches a finite diagnosis')
+redir => s:health
+silent SimpleMinimapHealth
+redir END
+call assert_match('\[WARN\] daemon version: .*did not answer --version within 3000ms',
+      \ s:health, 'Health reports the timeout instead of probing forever')
+call simpleminimap#Stop()
+
+call delete(s:probe_dir, 'rf')
 
 if len(v:errors)
   call writefile(v:errors, s:root .. '/tests/vim-errors.log')

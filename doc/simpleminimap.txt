@@ -93,11 +93,13 @@ Both values must be 1.
         per-session render statistics and the last backend error.
 
         It never blocks: the daemon version is probed with a job and reported
-        as "probing…" until it arrives, so running this command against a
-        wedged daemon cannot itself hang.  The probe is cached against the
-        binary's path, modification time and size, so the rebuild this command
-        recommends is picked up on the next |:SimpleMinimapHealth| rather than
-        reported from a cache for the rest of the session;
+        as "probing…" while it runs.  A three-second deadline stops a wedged
+        probe and turns that line into a finite warning, so the diagnostic
+        neither hangs nor says "probing…" forever.  The probe is cached
+        against the binary's path, modification time and size, so the rebuild
+        this command recommends is picked up on the next
+        |:SimpleMinimapHealth| rather than reported from a cache for the rest
+        of the session;
         |:SimpleMinimapRestart| discards the cache outright.
 
         It also reports configuration problems: a 'encoding' that cannot

@@ -78,6 +78,11 @@ var sessions: dict<any> = {}
 var requests: dict<string> = {}
 var incoming: dict<any> = {}
 var backend_job: any = v:null
+# Output callbacks do not identify their job.  A child that inherited an old
+# backend's stdout can therefore speak after :SimpleMinimapRestart has already
+# installed the replacement.  Capture this token in every callback so READY,
+# stderr and render frames are owned by the process that produced them.
+var backend_generation = 0
 var backend_path = ''
 var backend_ready = false
 var backend_error = ''
@@ -105,6 +110,10 @@ var backend_protocol = 0
 var daemon_version_probed = ''
 var daemon_version = ''
 var daemon_version_job: any = v:null
+var daemon_version_timer = 0
+var daemon_version_generation = 0
+var daemon_version_error = ''
+const DAEMON_VERSION_TIMEOUT_MS = 3000
 var backend_stopping = false
 var backend_restart_requested = false
 var next_request_id = 0
@@ -422,7 +431,10 @@ def RejectResponse(request_key: string, message: string)
 enddef
 
 
-def BackendOut(_channel: channel, message: string)
+def BackendOut(generation: number, _channel: channel, message: string)
+  if generation != backend_generation || backend_stopping
+    return
+  endif
   if message ==# ''
     return
   endif
@@ -588,7 +600,10 @@ def SendPing()
 enddef
 
 
-def BackendErr(_channel: channel, message: string)
+def BackendErr(generation: number, _channel: channel, message: string)
+  if generation != backend_generation || backend_stopping
+    return
+  endif
   if message ==# ''
     return
   endif
@@ -640,11 +655,18 @@ def ConsumeRestartBudget(reason: string): bool
 enddef
 
 
-def BackendExit(exited_job: job, status: number)
-  if type(backend_job) == v:t_job
-      && get(job_info(exited_job), 'process', -1) != get(job_info(backend_job), 'process', -2)
+def BackendExit(generation: number, _exited_job: job, status: number)
+  if generation != backend_generation
     Log('ignored exit callback from a superseded backend job')
     return
+  endif
+  # The process is no longer an output owner even when no replacement will be
+  # started.  A descendant may still hold its stdout open and speak later;
+  # advancing here also fences that case after a plain Stop(), not only after
+  # Restart() increments the token for a successor.
+  backend_generation += 1
+  if backend_generation <= 0
+    backend_generation = 1
   endif
   var explicitly_requested = backend_restart_requested
   var unexpected = !backend_stopping
@@ -680,20 +702,68 @@ def BackendExit(exited_job: job, status: number)
 enddef
 
 
-def DaemonVersionOut(_channel: channel, message: string)
+def DaemonVersionOut(generation: number, _output_channel: channel, message: string)
+  # Output buffered by a child that inherited stdout may arrive after the
+  # direct probe process exited and DaemonVersionExit() cleared the handle.
+  # Generation is the durable identity: every timeout, replacement and Stop
+  # advances it before killing the old job, so no obsolete callback can pass.
+  if generation != daemon_version_generation
+    return
+  endif
   if daemon_version ==# '' && message !=# ''
     daemon_version = message
+    daemon_version_error = ''
   endif
 enddef
 
 
-def DaemonVersionExit(exited_job: job, _status: number)
+def StopDaemonVersionTimer()
+  if daemon_version_timer > 0
+    timer_stop(daemon_version_timer)
+    daemon_version_timer = 0
+  endif
+enddef
+
+
+def DaemonVersionExit(generation: number, exited_job: job, status: number)
   # A re-probe can start before the previous probe's exit callback arrives;
   # clearing the handle unconditionally would then hide the live job and make
   # Health report "not probed yet" while a probe is in flight.
-  if type(daemon_version_job) != v:t_job || daemon_version_job == exited_job
-    daemon_version_job = v:null
+  if generation != daemon_version_generation
+      || type(daemon_version_job) != v:t_job
+      || daemon_version_job != exited_job
+    return
   endif
+  StopDaemonVersionTimer()
+  daemon_version_job = v:null
+  if daemon_version ==# ''
+    daemon_version_error = status == 0
+      ? 'the binary produced no --version output'
+      : printf('the --version probe exited with status %d', status)
+  endif
+enddef
+
+
+def DaemonVersionTimeout(generation: number)
+  daemon_version_timer = 0
+  if generation != daemon_version_generation
+      || type(daemon_version_job) != v:t_job
+    return
+  endif
+  var expired = daemon_version_job
+  # Invalidate every callback before stopping the process.  Vim may still
+  # deliver output buffered before an exit; without an identity guard that
+  # late line can erase the timeout warning and reinstate an obsolete version.
+  daemon_version_generation += 1
+  daemon_version_job = v:null
+  if daemon_version ==# ''
+    daemon_version_error = printf(
+      'the binary did not answer --version within %dms', DAEMON_VERSION_TIMEOUT_MS)
+  endif
+  try
+    job_stop(expired, 'kill')
+  catch
+  endtry
 enddef
 
 
@@ -709,13 +779,17 @@ enddef
 def ForgetDaemonVersion()
   daemon_version_probed = ''
   daemon_version = ''
-  if type(daemon_version_job) == v:t_job
+  daemon_version_error = ''
+  StopDaemonVersionTimer()
+  var running = daemon_version_job
+  daemon_version_generation += 1
+  daemon_version_job = v:null
+  if type(running) == v:t_job
     try
-      job_stop(daemon_version_job)
+      job_stop(running, 'kill')
     catch
     endtry
   endif
-  daemon_version_job = v:null
 enddef
 
 
@@ -730,24 +804,50 @@ def ProbeDaemonVersion(path: string)
   # DaemonVersionOut() keeps the first answer it sees, so a probe still in
   # flight for the previous binary would otherwise win the race and reinstate
   # the stale version this call exists to replace.
-  if type(daemon_version_job) == v:t_job
+  StopDaemonVersionTimer()
+  var previous = daemon_version_job
+  daemon_version_generation += 1
+  var generation = daemon_version_generation
+  daemon_version_job = v:null
+  if type(previous) == v:t_job
     try
-      job_stop(daemon_version_job)
+      job_stop(previous, 'kill')
     catch
     endtry
   endif
   daemon_version_probed = stamp
   daemon_version = ''
+  daemon_version_error = ''
   try
-    daemon_version_job = job_start([path, '--version'], {
+    var started = job_start([path, '--version'], {
       in_io: 'null',
       out_mode: 'nl',
-      out_cb: DaemonVersionOut,
-      exit_cb: DaemonVersionExit,
+      out_cb: (channel, message) => DaemonVersionOut(generation, channel, message),
+      exit_cb: (exited, status) => DaemonVersionExit(generation, exited, status),
       stoponexit: 'kill',
     })
+    daemon_version_job = started
+    # Arm the timer before job_status(): Vim documents that job_status() may
+    # synchronously invoke an exit callback.  The callback can then stop this
+    # timer instead of leaving an ownerless one behind.
+    daemon_version_timer = timer_start(DAEMON_VERSION_TIMEOUT_MS,
+      (_) => DaemonVersionTimeout(generation))
+    var status = job_status(started)
+    if generation != daemon_version_generation
+        || type(daemon_version_job) != v:t_job
+        || daemon_version_job != started
+      return
+    endif
+    if status ==# 'fail'
+      StopDaemonVersionTimer()
+      daemon_version_job = v:null
+      daemon_version_error = 'the --version probe could not start'
+      return
+    endif
   catch
+    StopDaemonVersionTimer()
     daemon_version_job = v:null
+    daemon_version_error = 'the --version probe could not start: ' .. v:exception
   endtry
 enddef
 
@@ -778,6 +878,11 @@ def StartBackend(): bool
   try
     backend_ready = false
     backend_error = ''
+    backend_generation += 1
+    if backend_generation <= 0
+      backend_generation = 1
+    endif
+    var generation = backend_generation
     backend_job = job_start([backend_path], {
       in_io: 'pipe',
       out_io: 'pipe',
@@ -785,9 +890,9 @@ def StartBackend(): bool
       in_mode: 'raw',
       out_mode: 'nl',
       err_mode: 'nl',
-      out_cb: BackendOut,
-      err_cb: BackendErr,
-      exit_cb: BackendExit,
+      out_cb: (channel, message) => BackendOut(generation, channel, message),
+      err_cb: (channel, message) => BackendErr(generation, channel, message),
+      exit_cb: (exited, status) => BackendExit(generation, exited, status),
       stoponexit: 'term',
       noblock: 1,
     })
@@ -3621,9 +3726,12 @@ export def Health()
     printf('[%s] Vim version: %d', v:version >= 900 ? 'OK' : 'FAIL', v:version),
     printf('[%s] +job / +channel: %d / %d', has('job') && has('channel') ? 'OK' : 'FAIL', has('job'), has('channel')),
     printf('[%s] daemon: %s', daemon ==# '' ? 'FAIL' : 'OK', daemon ==# '' ? 'not found' : daemon),
-    printf('[INFO] daemon version: %s', daemon_version ==# ''
-      ? (type(daemon_version_job) == v:t_job ? 'probing…' : 'not probed yet')
-      : daemon_version),
+    printf('[%s] daemon version: %s', daemon_version_error ==# '' ? 'INFO' : 'WARN',
+      daemon_version_error !=# ''
+        ? daemon_version_error
+        : daemon_version ==# ''
+          ? (type(daemon_version_job) == v:t_job ? 'probing…' : 'not probed yet')
+          : daemon_version),
     printf('[%s] daemon protocol: %s',
       backend_protocol == 0 ? 'INFO' : (backend_protocol == PROTOCOL_VERSION ? 'OK' : 'FAIL'),
       backend_protocol == 0
@@ -3711,6 +3819,7 @@ export def DebugStatus(): dict<any>
     # without hardcoding a number that goes stale on the next protocol bump.
     protocol_version: PROTOCOL_VERSION,
     daemon_version: daemon_version,
+    daemon_version_error: daemon_version_error,
     unknown_options: UnknownOptions(),
     sample_cache: SampleCacheStats(),
     backend_latency_ms: backend_latency_ms,

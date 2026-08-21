@@ -129,6 +129,9 @@ cp target/release/simpleminimap-daemon lib/
 :SimpleMinimapDebug     " 完整内部状态字典
 ```
 
+版本探测异步执行并有 3 秒截止时间；即使配置的 daemon 卡在
+`--version`，Health 也不会阻塞或永久停在 `probing…`。
+
 默认全局映射是 `<leader>m`，但仅在该按键尚未被占用且
 `g:simpleminimap_set_default_mapping` 为 `1` 时安装。插件还提供：
 
