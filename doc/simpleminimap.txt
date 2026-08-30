@@ -141,8 +141,13 @@ The plugin exposes one target per command:      *<Plug>(simpleminimap-toggle)*
 The pin target is idempotent: invoking it while already pinned keeps the pin.
 Use the toggle-pin target for a mapping that alternates between both states.
 
-When |g:simpleminimap_set_default_mapping| is enabled and <Leader>m is free,
-the plugin maps <Leader>m to that <Plug> target.
+When |g:simpleminimap_set_default_mapping| is enabled and <Leader>mm is free,
+the plugin maps <Leader>mm to that <Plug> target.  Two characters, under a
+common letter, the way simplegit takes <Leader>g... and simplecc <Leader>c...:
+the default used to be a bare <Leader>m, which is a strict prefix of
+simplemarkdown's <Leader>md.  maparg() matches a sequence exactly, so neither
+plugin's guard could see the other's mapping and both installed; Vim then had
+to wait out 'timeoutlen' before it could tell <Leader>m from <Leader>md.
 
 Inside the minimap buffer:
 
@@ -439,7 +444,8 @@ All options must be set before the plugin is loaded.
         on the first drag event instead.
 
 *g:simpleminimap_set_default_mapping*
-        Boolean number, default 1.  Install <Leader>m only when it is unused.
+        Boolean number, default 1.  Install <Leader>mm only when it is
+        unused.
 
 *g:simpleminimap_debug*
         Boolean number, default 0.  Emit diagnostic messages to |:messages|.
@@ -682,10 +688,28 @@ Every daemon in the simple* suite answers these three the same way.
 
 VENDORED SUPERVISOR                                 *simpleminimap-simplecore*
 
-The suite's shared daemon supervisor in autoload/simpleminimap/core.vim, and
-the test harness beside it, are vendored from the shared .simplecore bundle
-rather than written here — each plugin carries its own copy so that installing
-this plugin alone is enough.  Do not edit those files in place: >
+autoload/simpleminimap/core.vim is the simple* suite's shared daemon
+supervisor, vendored from the .simplecore bundle rather than written here, so
+that installing this plugin alone is enough.  Read the next paragraph before
+you conclude anything about this plugin from it.
+
+This plugin does not call it.  There is not one simpleminimap#core#* call site
+in the repository outside core.vim and the vendored tests/vim_core.vim; what
+starts, fences, restarts and gives up on the minimap backend is the supervisor
+written directly in autoload/simpleminimap.vim, described under
+|simpleminimap-daemon|.  So a green `make vim-core`, and a `make core-verify`
+that reports the bundle verified, say nothing whatever about the daemon
+lifecycle you actually get: the first runs the bundle's own supervisor suite
+against the bundle's supervisor, and the second only checks that this plugin's
+unused copy of it still matches the hash recorded beside it.
+
+The supervisor that does run is covered by tests/vim_generation.vim (the
+generation fence), tests/vim_timeout.vim (the request deadline, the restart
+budget, and both breaker reasons), tests/vim_lifecycle.vim and
+tests/vim_integration.vim — those are the targets a change to the supervision
+under |simpleminimap-daemon| has to answer to.
+
+Do not edit the vendored files in place: >
 
   make core-verify
 <

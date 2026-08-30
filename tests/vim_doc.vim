@@ -24,6 +24,47 @@ call assert_true(len(s:lines) > 100, 'the help file was read')
 " gate never mutates the tree it is checking.
 " ---------------------------------------------------------------------------
 let s:scratch = s:root .. '/tests/vim-doc-tags'
+" ---------------------------------------------------------------------------
+" The vendored-supervisor section must describe what this plugin actually does.
+"
+" autoload/simpleminimap/core.vim is the simple* suite's shared daemon
+" supervisor, and this plugin does not call it once: the backend is started,
+" fenced, restarted and given up on by autoload/simpleminimap.vim.  The help
+" used to introduce the vendored file as "the suite's shared daemon supervisor"
+" and stop there, which reads as a claim that the lifecycle you get is the
+" shared, well-tested one -- and `make vim-core` running 300-odd lines of green
+" supervisor tests, plus `make core-verify` reporting the bundle verified,
+" agree with that reading all the way to the wrong conclusion.
+"
+" So the sentence is tied here to the fact underneath it.  Adopt the core
+" supervisor and the disclaimer becomes false and this fails; drop the
+" disclaimer while nothing calls the core and this fails too.
+" ---------------------------------------------------------------------------
+let s:self = expand('<sfile>:p')
+let s:vendored = [s:root .. '/autoload/simpleminimap/core.vim',
+      \ s:root .. '/tests/vim_core.vim', s:self]
+let s:call_sites = []
+for s:file in glob(s:root .. '/autoload/**/*.vim', 0, 1)
+      \ + glob(s:root .. '/plugin/*.vim', 0, 1)
+      \ + glob(s:root .. '/tests/*.vim', 0, 1)
+  if index(s:vendored, s:file) >= 0
+    continue
+  endif
+  if match(readfile(s:file), 'simpleminimap#core#') >= 0
+    call add(s:call_sites, fnamemodify(s:file, ':.'))
+  endif
+endfor
+
+" Asserted as two booleans rather than with assert_match() over the help text:
+" a failed assert_match prints the entire help file and buries the answer.
+let s:says_unused = match(s:lines, 'This plugin does not call it') >= 0
+call assert_equal(empty(s:call_sites), s:says_unused, empty(s:call_sites)
+      \ ? 'nothing outside the vendored files calls simpleminimap#core#, so '
+      \ .. '|simpleminimap-simplecore| must say so rather than leave the reader '
+      \ .. 'to assume the shared supervisor is what runs here'
+      \ : printf('|simpleminimap-simplecore| still says the core supervisor is '
+      \ .. 'unused, but it is called from %s', join(s:call_sites, ', ')))
+
 call delete(s:scratch, 'rf')
 call mkdir(s:scratch, 'p')
 call writefile(s:lines, s:scratch .. '/simpleminimap.txt')

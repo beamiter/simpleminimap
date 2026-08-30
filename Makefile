@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-generation test-vim-health test-vim-doc test-vim-remote test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-generation test-vim-health test-vim-doc test-vim-mappings test-vim-remote test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-generation test-vim-health test-vim-doc test-vim-remote test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-generation test-vim-health test-vim-doc test-vim-mappings test-vim-remote test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -94,6 +94,12 @@ test-vim-health:
 test-vim-doc:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_doc.vim
 
+# The default <Leader> mapping, which every other vim target here switches off
+# before it loads the plugin -- so it needs a Vim of its own, loading the plugin
+# repeatedly with a sibling's default already installed and with it not.
+test-vim-mappings:
+	vim -Nu NONE -n -i NONE -es -S tests/vim_mappings.vim
+
 # A SimpleRemote virtual workspace, simulated: remote:// buffers whose
 # 'buftype' flips to acwrite after an asynchronous fill from a callback.  Fed
 # on stdin rather than with -S because Vim does not fire OptionSet during
@@ -113,6 +119,12 @@ clean:
 # simplecore: the vendored daemon supervisor shared by the simple* suite.
 #   https://github.com/beamiter/simplecore
 # Regenerate with ../.simplecore/vendor.sh; never edit autoload/simpleminimap/core.vim.
+#
+# These lines are vendored too.  They are the tail of this Makefile — nothing
+# above the banner belongs to the bundle — and `.simplecore.manifest` records
+# them as a `footer` fragment.  Until it did, they were the one bundle member
+# copied by hand and hashed by nothing, so core-verify could not see them
+# drift; nine plugins carried an installer in the same position.
 # ---------------------------------------------------------------------------
 
 # The bundle is copied into each plugin rather than shared by reference, so
@@ -125,12 +137,46 @@ clean:
 #   git clone https://github.com/beamiter/simplecore ../.simplecore
 #   ../.simplecore/vendor.sh --check    # suite-wide drift
 #   ../.simplecore/vendor.sh            # re-vendor
+#
+# Whole files are plain `sha256sum -c` records.  A fragment — a run of lines
+# inside a file the plugin itself owns, like this footer — is recorded as
+# `footer <lines> <sha256>  <path>` and checked against the tail of <path>.
 core-verify:
+	@records=$$(grep -cE '^[0-9a-f]{64}' .simplecore.manifest); \
+	checked=$$(grep -cE '^[0-9a-f]{64}  ' .simplecore.manifest); \
+	test "$$records" = "$$checked" || { \
+	  echo ".simplecore.manifest: $$((records - checked)) hash record(s) not checked" >&2; \
+	  echo "  a record whose separator is not exactly two spaces is dropped by the" >&2; \
+	  echo "  reader below and would verify green while its file went unchecked." >&2; \
+	  exit 1; }
 	@grep -E '^[0-9a-f]{64}  ' .simplecore.manifest | sha256sum -c --quiet
+	@awk '$$1 == "footer" { print $$2, $$3, $$4 }' .simplecore.manifest \
+	| while read -r lines sum path; do \
+		test "$$(tail -n "$$lines" "$$path" | sha256sum | cut -d' ' -f1)" = "$$sum" \
+		|| { echo "$$path: FAILED (simplecore footer)" >&2; exit 1; }; \
+	done
 	@echo "simplecore: bundle v$$(awk '$$1 == "version" { print $$2 }' .simplecore.manifest) verified"
 
+# core-verify proves this repository is internally consistent: every vendored
+# copy still matches the manifest written beside it.  It cannot prove freshness.
+# A plugin that misses a re-vendor keeps verifying its own stale copy for ever,
+# and stays green doing it, because the bundle is deliberately not required to
+# be present for the build to work.  This target is the other half, for when it
+# is present; `check` cannot depend on it without making the bundle a build
+# dependency, which is the coupling the vendoring exists to avoid.
+SIMPLECORE_DIR ?= ../.simplecore
+core-fresh:
+	@if [ -x "$(SIMPLECORE_DIR)/vendor.sh" ]; then \
+	  SIMPLECORE_SUITE="$(patsubst %/,%,$(dir $(CURDIR)))" \
+	    "$(SIMPLECORE_DIR)/vendor.sh" --check "$(notdir $(CURDIR))"; \
+	else \
+	  echo "simplecore: $(SIMPLECORE_DIR) is not checked out; freshness unverified"; \
+	fi
+
 # Supervisor regression suite: liveness, generation guards, backoff restarts,
-# the crash-loop breaker, request timeouts and the protocol handshake.
+# the crash-loop breaker, request timeouts, and both outcomes of the protocol
+# handshake — the reply that lands, and the deadline that expires and fails the
+# start.
 vim-core:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_core.vim
 
@@ -138,3 +184,5 @@ vim-core:
 # hidden until a user reaches it.  :defcompile surfaces it here instead.
 defcompile:
 	vim -Nu NONE -n -i NONE -es -S tests/defcompile.vim
+
+.PHONY: core-verify core-fresh vim-core defcompile

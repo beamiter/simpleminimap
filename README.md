@@ -132,8 +132,12 @@ cp target/release/simpleminimap-daemon lib/
 版本探测异步执行并有 3 秒截止时间；即使配置的 daemon 卡在
 `--version`，Health 也不会阻塞或永久停在 `probing…`。
 
-默认全局映射是 `<leader>m`，但仅在该按键尚未被占用且
-`g:simpleminimap_set_default_mapping` 为 `1` 时安装。插件还提供：
+默认全局映射是 `<leader>mm`，但仅在该按键尚未被占用且
+`g:simpleminimap_set_default_mapping` 为 `1` 时安装。之所以是两个字符、且统一挂在
+`m` 下面（正如 simplegit 的 `<leader>g...`、simplecc 的 `<leader>c...`）：早先的默认值
+是单字符 `<leader>m`，它是 simplemarkdown `<leader>md` 的严格前缀。`maparg()` 只做精确
+匹配，两边的守卫都看不见对方，于是两个映射都会装上，Vim 必须等满 `'timeoutlen'`
+才能区分 `<leader>m` 与 `<leader>md`。插件还提供：
 
 ```vim
 <Plug>(simpleminimap-toggle)
@@ -212,7 +216,7 @@ minimap 缓冲区内的按键：
 | `g:simpleminimap_request_timeout_ms` | `5000` | 单次渲染请求的超时（毫秒，限制 `100..600000`）；连续两次超时会重启 daemon，且与崩溃共用同一份重启预算，设为 `0` 关闭 |
 | `g:simpleminimap_mouse_scroll_lines` | 跟随 `'mousescroll'` | 在 minimap 上滚动一格滚轮时源窗口移动的行数，限制为 `1..50`；未显式设置时取 `'mousescroll'` 的 `ver:`，没有该选项或为 `ver:0` 时回退到 `3` |
 | `g:simpleminimap_drag_thumb` | `1` | 从视口高亮带内起手的左键拖动是否滚动源窗口（滚动条式）；设为 `0` 恢复“拖动即预览” |
-| `g:simpleminimap_set_default_mapping` | `1` | 是否在 `<leader>m` 空闲时安装默认映射 |
+| `g:simpleminimap_set_default_mapping` | `1` | 是否在 `<leader>mm` 空闲时安装默认映射 |
 | `g:simpleminimap_debug` | `0` | 是否通过 `:messages` 输出调试日志 |
 
 `g:simpleminimap_width` 是全局配置：运行时执行

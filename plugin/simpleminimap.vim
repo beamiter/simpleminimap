@@ -131,8 +131,20 @@ nnoremap <silent> <Plug>(simpleminimap-style) <Cmd>SimpleMinimapStyle<CR>
 nnoremap <silent> <Plug>(simpleminimap-restart) <Cmd>SimpleMinimapRestart<CR>
 nnoremap <silent> <Plug>(simpleminimap-health) <Cmd>SimpleMinimapHealth<CR>
 nnoremap <silent> <Plug>(simpleminimap-log) <Cmd>SimpleMinimapLog<CR>
-if g:simpleminimap_set_default_mapping && maparg('<leader>m', 'n') ==# ''
-  nmap <silent> <leader>m <Plug>(simpleminimap-toggle)
+# Two characters deep under a common letter, as in simplegit's <leader>g... and
+# simplecc's <leader>c.../<leader>f....  It used to be a bare <leader>m, which
+# maparg() cannot defend: the guard matches a sequence exactly, so
+# maparg('<leader>m') is empty while simplemarkdown's <leader>md exists and
+# maparg('<leader>md') is empty while <leader>m exists.  Both defaults therefore
+# installed whatever the load order, and <leader>m became a strict prefix of
+# <leader>md -- Vim then cannot dispatch the minimap until 'timeoutlen' has
+# passed, and any key typed within it goes to <leader>md or to nothing at all.
+# A leader sequence no sibling can be a continuation of is what actually fixes
+# it; the exact-match guard below is then the right instrument, because the only
+# thing left for it to defend against is a user who wants the key for something
+# else.
+if g:simpleminimap_set_default_mapping && maparg('<leader>mm', 'n') ==# ''
+  nmap <silent> <leader>mm <Plug>(simpleminimap-toggle)
 endif
 
 simpleminimap#SetupHighlights()
