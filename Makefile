@@ -1,4 +1,4 @@
-.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-generation test-vim-health test-vim-doc test-vim-mappings test-vim-remote test-vim-real clean vim-core defcompile core-verify
+.PHONY: check build install fmt lint clippy test test-rust test-daemon test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-handshake test-vim-generation test-vim-health test-vim-doc test-vim-mappings test-vim-remote test-vim-real clean vim-core defcompile core-verify
 
 build:
 	cargo build --release --locked
@@ -16,7 +16,7 @@ clippy:
 lint: clippy
 
 # `check` is the full gate in every simple* plugin; `test` is cargo test alone.
-check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-generation test-vim-health test-vim-doc test-vim-mappings test-vim-remote test-vim-real
+check: core-verify fmt clippy test test-daemon defcompile vim-core test-vim test-vim-lifecycle test-vim-scroll test-vim-projection test-vim-overlays test-vim-incremental test-vim-colors test-vim-fill test-vim-popup test-vim-timeout test-vim-handshake test-vim-generation test-vim-health test-vim-doc test-vim-mappings test-vim-remote test-vim-real
 
 # Kept: `test-rust` predates the suite-wide name.
 test-rust: test
@@ -78,6 +78,11 @@ test-vim-popup:
 # start, so it needs its own Vim instance.
 test-vim-timeout:
 	vim -Nu NONE -n -i NONE -es -S tests/vim_timeout.vim
+
+# A process can stay alive without ever announcing READY.  This exercises the
+# startup deadline separately from the post-handshake request deadline above.
+test-vim-handshake:
+	vim -Nu NONE -n -i NONE -es -S tests/vim_handshake.vim
 
 # An old backend may leave a child holding its stdout after restart.  Its late
 # READY line must not change the replacement process's protocol/readiness.

@@ -1,5 +1,6 @@
 #!/usr/bin/env python3
 import os
+import signal
 import sys
 
 PROTOCOL = 3
@@ -39,7 +40,14 @@ if spawn_log:
     with open(spawn_log, 'a') as handle:
         handle.write(f'{os.getpid()}\n')
 
-emit(f'READY\t{PROTOCOL}')
+# A startup failure cannot assume graceful termination works.  This process
+# deliberately ignores SIGTERM so the handshake test distinguishes a hard
+# kill from job_stop()'s default termination request.
+if os.environ.get('SIMPLEMINIMAP_TEST_IGNORE_TERM', ''):
+    signal.signal(signal.SIGTERM, signal.SIG_IGN)
+
+if not os.environ.get('SIMPLEMINIMAP_TEST_NO_READY', ''):
+    emit(f'READY\t{PROTOCOL}')
 crash_once = os.environ.get('SIMPLEMINIMAP_TEST_CRASH_ONCE', '')
 if crash_once:
     try:

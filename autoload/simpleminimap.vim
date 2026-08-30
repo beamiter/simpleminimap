@@ -86,6 +86,12 @@ var backend_generation = 0
 var backend_path = ''
 var backend_ready = false
 var backend_error = ''
+const BACKEND_HANDSHAKE_TIMEOUT_MS = 3000
+var backend_handshake_timer = 0
+var backend_handshake_timeouts = 0
+# Set only while an involuntary stop is in flight.  BackendExit() otherwise
+# replaces the useful diagnosis with the much less useful signal number.
+var backend_failure_reason = ''
 var backend_restart_timer = 0
 var backend_restart_attempts = 0
 # Restarts are budgeted over a sliding window rather than counted since the
@@ -433,6 +439,7 @@ enddef
 
 def BackendOut(generation: number, _channel: channel, message: string)
   if generation != backend_generation || backend_stopping
+      || backend_failure_reason !=# ''
     return
   endif
   if message ==# ''
@@ -444,6 +451,7 @@ def BackendOut(generation: number, _channel: channel, message: string)
   endif
 
   if fields[0] ==# 'READY'
+    StopBackendHandshakeTimer()
     backend_protocol = len(fields) == 2 ? str2nr(fields[1]) : 0
     backend_ready = len(fields) == 2 && backend_protocol == PROTOCOL_VERSION
     if !backend_ready
@@ -582,6 +590,48 @@ def BackendOut(generation: number, _channel: channel, message: string)
 enddef
 
 
+def StopBackendHandshakeTimer()
+  if backend_handshake_timer > 0
+    timer_stop(backend_handshake_timer)
+    backend_handshake_timer = 0
+  endif
+enddef
+
+
+def BackendHandshakeTimeout(generation: number, timer: number)
+  # timer_stop() is not a synchronization barrier: a callback already queued
+  # by Vim may run after a replacement backend has started.  Both identities
+  # have to agree before this callback may kill a process.
+  if generation != backend_generation || timer != backend_handshake_timer
+    return
+  endif
+  # We still own this timer even when READY won the race after Vim queued the
+  # callback.  Retire the handle first; returning with its expired positive id
+  # would make Health/Debug claim a deadline is pending forever.
+  backend_handshake_timer = 0
+  if backend_stopping || backend_ready || !BackendRunning()
+    return
+  endif
+  backend_handshake_timeouts += 1
+  backend_failure_reason = 'handshake timeout'
+  backend_error = printf('backend did not announce READY within %dms',
+    BACKEND_HANDSHAKE_TIMEOUT_MS)
+  Log(backend_error)
+  for key in keys(sessions)
+    RenderMessage(key, ['SimpleMinimap backend error', 'READY handshake timed out'])
+  endfor
+  try
+    # A process which never completed its handshake is not trusted to honour
+    # SIGTERM either.  Waiting for a graceful exit here can leave it running
+    # forever with backend_failure_reason fencing all subsequent output, so no
+    # exit callback, restart, or breaker transition can ever happen.
+    job_stop(backend_job, 'kill')
+  catch
+    Log('failed to stop backend after handshake timeout: ' .. v:exception)
+  endtry
+enddef
+
+
 def SendPing()
   if !BackendRunning() || !backend_ready
     return
@@ -602,6 +652,7 @@ enddef
 
 def BackendErr(generation: number, _channel: channel, message: string)
   if generation != backend_generation || backend_stopping
+      || backend_failure_reason !=# ''
     return
   endif
   if message ==# ''
@@ -664,6 +715,9 @@ def BackendExit(generation: number, _exited_job: job, status: number)
   # started.  A descendant may still hold its stdout open and speak later;
   # advancing here also fences that case after a plain Stop(), not only after
   # Restart() increments the token for a successor.
+  StopBackendHandshakeTimer()
+  var failure_reason = backend_failure_reason
+  backend_failure_reason = ''
   backend_generation += 1
   if backend_generation <= 0
     backend_generation = 1
@@ -672,7 +726,9 @@ def BackendExit(generation: number, _exited_job: job, status: number)
   var unexpected = !backend_stopping
   backend_job = v:null
   backend_ready = false
-  backend_error = printf('backend exited with status %d', status)
+  if failure_reason ==# ''
+    backend_error = printf('backend exited with status %d', status)
+  endif
   backend_latency_ms = -1.0
   ping_started = []
   requests = {}
@@ -683,7 +739,8 @@ def BackendExit(generation: number, _exited_job: job, status: number)
   Log(backend_error)
   var should_restart = explicitly_requested
   if unexpected && get(g:, 'simpleminimap_auto_restart', 1)
-    should_restart = ConsumeRestartBudget('crash loop')
+    should_restart = ConsumeRestartBudget(
+      failure_reason ==# '' ? 'crash loop' : failure_reason)
   endif
   if should_restart && !empty(sessions)
     var delays = [100, 350, 1000]
@@ -875,14 +932,17 @@ def StartBackend(): bool
     return false
   endif
 
+  var generation = 0
   try
+    StopBackendHandshakeTimer()
+    backend_failure_reason = ''
     backend_ready = false
     backend_error = ''
     backend_generation += 1
     if backend_generation <= 0
       backend_generation = 1
     endif
-    var generation = backend_generation
+    generation = backend_generation
     backend_job = job_start([backend_path], {
       in_io: 'pipe',
       out_io: 'pipe',
@@ -908,6 +968,10 @@ def StartBackend(): bool
     backend_ready = false
     return false
   endif
+  if generation == backend_generation && !backend_ready && BackendRunning()
+    backend_handshake_timer = timer_start(BACKEND_HANDSHAKE_TIMEOUT_MS,
+      function(BackendHandshakeTimeout, [generation]))
+  endif
   Log('started backend: ' .. backend_path)
   ProbeDaemonVersion(backend_path)
   return true
@@ -915,6 +979,8 @@ enddef
 
 
 def StopBackend(restart: bool = false)
+  StopBackendHandshakeTimer()
+  backend_failure_reason = ''
   if backend_restart_timer > 0
     timer_stop(backend_restart_timer)
     backend_restart_timer = 0
@@ -3741,6 +3807,15 @@ export def Health()
             : printf('daemon v%d, plugin expects v%d — run ./install.sh, then :SimpleMinimapRestart',
                 backend_protocol, PROTOCOL_VERSION))),
     printf('[%s] backend: %s, ready=%d', BackendRunning() ? 'OK' : 'INFO', BackendRunning() ? job_status(backend_job) : 'stopped', backend_ready ? 1 : 0),
+    printf('[%s] READY handshake: %s',
+      backend_ready ? 'OK'
+        : (backend_handshake_timer > 0 ? 'INFO'
+          : (backend_handshake_timeouts > 0 ? 'WARN' : 'INFO')),
+      backend_ready
+        ? printf('complete; %d timeout(s) so far', backend_handshake_timeouts)
+        : backend_handshake_timer > 0
+          ? printf('waiting, %dms deadline', BACKEND_HANDSHAKE_TIMEOUT_MS)
+          : printf('idle; %d timeout(s) so far', backend_handshake_timeouts)),
     printf('[INFO] backend latency: %s', backend_latency_ms >= 0.0 ? printf('%.1fms', backend_latency_ms) : 'n/a'),
     printf('[%s] search projection: %s', search_supported ? 'OK' : 'INFO', search_supported ? 'matchbufline() available' : 'disabled, needs Vim 9.1.0009+'),
     printf('[%s] density shading: %s', ShadingEnabled() ? 'OK' : 'INFO', ShadingEnabled() ? 'enabled' : (has('textprop') == 1 ? 'disabled by g:simpleminimap_shading' : 'needs +textprop')),
@@ -3814,6 +3889,9 @@ export def DebugStatus(): dict<any>
     backend_breaker_tripped: backend_breaker_tripped,
     backend_breaker_reason: backend_breaker_reason,
     backend_timeouts: backend_timeouts,
+    backend_handshake_pending: backend_handshake_timer > 0,
+    backend_handshake_timeout_ms: BACKEND_HANDSHAKE_TIMEOUT_MS,
+    backend_handshake_timeouts: backend_handshake_timeouts,
     backend_protocol: backend_protocol,
     # The version this plugin speaks, so a test can assert the skew report
     # without hardcoding a number that goes stale on the next protocol bump.
@@ -3846,5 +3924,6 @@ export def Stop()
   backend_breaker_tripped = false
   backend_breaker_reason = ''
   backend_timeouts = 0
+  backend_handshake_timeouts = 0
   consecutive_timeouts = 0
 enddef
