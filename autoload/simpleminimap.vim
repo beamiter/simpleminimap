@@ -4,8 +4,8 @@ const PROTOCOL_VERSION = 3
 const MIN_RENDER_HEIGHT = 1
 const MAX_BACKEND_RESTARTS = 3
 const RESTART_WINDOW_MS = 60000.0
-# Search projection reads the source buffer through matchbufline() one bounded
-# sub-chunk at a time and abandons a row band at its first hit, so a dense
+# Search projection probes the source buffer one bounded sub-chunk at a time
+# and abandons a row band at its first hit, so a dense
 # pattern costs a few hundred lines per row rather than the whole buffer.
 # SEARCH_MAX_SCAN_LINES caps the pathological case -- a pattern that matches
 # nowhere in a multi-million-line buffer -- and marks the projection partial.
@@ -2292,9 +2292,10 @@ def UpdateSearch(key: string, force: bool = false)
   var enabled = supported && get(g:, 'simpleminimap_show_search', 1)
     && OverlayEnabled('search')
   var state: list<any> = enabled
-    ? [v:hlsearch, @/, getbufvar(session.source_bufnr, 'changedtick', 0)]
+    ? [v:hlsearch, @/, getbufvar(session.source_bufnr, 'changedtick', 0),
+        &ignorecase, &smartcase]
     : []
-  # [-1] is a sentinel no real state (empty, or [hlsearch, pattern, tick]) equals.
+  # [-1] is a sentinel that cannot be a real search state.
   if !force && state ==# get(session, 'search_state', [-1])
     return
   endif
@@ -2328,6 +2329,23 @@ enddef
 # first hit, in sub-chunks so that a dense pattern cannot allocate a whole
 # band's worth of matches either.  Returns [rows, partial].
 def SearchRows(session: dict<any>, pattern: string): list<any>
+  if &ignorecase && &smartcase
+    var winid = get(session, 'source_winid', 0)
+    if !WindowExists(winid) || WindowInfo(winid).bufnr != session.source_bufnr
+      return [[], true]
+    endif
+    var bands: list<any> = []
+    for row in session.rows
+      bands->add([row.start, row.end])
+    endfor
+    try
+      var raw = win_execute(winid,
+        printf('echo json_encode(simpleminimap#SearchSmartcaseProbe(%s))', string(bands)))
+      return json_decode(trim(raw))
+    catch
+      return [[], true]
+    endtry
+  endif
   var rows = session.rows
   var info = getbufinfo(session.source_bufnr)
   var last_line = empty(info) ? 0 : get(info[0], 'linecount', 0)
@@ -2356,6 +2374,40 @@ def SearchRows(session: dict<any>, pattern: string): list<any>
       line = chunk_end + 1
     endwhile
   endfor
+  return [marked, false]
+enddef
+
+
+# matchbufline() honors ignorecase and explicit \c/\C, but not smartcase.
+# Use Vim's own last search in its source window rather than guessing case
+# from ASCII letters (regex escapes and Unicode matter).
+export def SearchSmartcaseProbe(bands: list<any>): list<any>
+  var view = winsaveview()
+  var marked: list<number> = []
+  var budget = SEARCH_MAX_SCAN_LINES
+  var last_line = line('$')
+  try
+    for index in range(len(bands))
+      var line = bands[index][0]
+      var row_end = min([bands[index][1], last_line])
+      while line <= row_end
+        if budget <= 0
+          return [marked, true]
+        endif
+        var chunk_end = min([row_end, line + SEARCH_CHUNK_LINES - 1])
+        budget -= chunk_end - line + 1
+        cursor(line, 1)
+        var found = searchpos('', 'cnW', chunk_end)[0]
+        if found >= line && found <= chunk_end
+          marked->add(index + 1)
+          break
+        endif
+        line = chunk_end + 1
+      endwhile
+    endfor
+  finally
+    winrestview(view)
+  endtry
   return [marked, false]
 enddef
 
@@ -3557,6 +3609,13 @@ export def OnCursorMoved(winid: number)
       UpdateSearch(key)
     endif
   endfor
+enddef
+
+
+export def OnSearchOptionsChanged()
+  if !internal_change
+    UpdateSearch(SessionKeyForTab(tabpagenr()))
+  endif
 enddef
 
 

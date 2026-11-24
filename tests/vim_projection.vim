@@ -93,6 +93,61 @@ if exists('*matchbufline')
   call assert_true(s:marked.start <= 25000 && 25000 <= s:marked.end,
         \ 'the marked row is the band containing the match')
 
+  " Use distinct row bands and compare Vim's real / search with the projection.
+  call setline(3, 'foo élan')
+  call setline(40000, 'Foo Élan')
+  function! s:SearchRowsAt(lines) abort
+    let result = []
+    let rows = s:Session().rows
+    for index in range(len(rows))
+      for lnum in a:lines
+        if rows[index].start <= lnum && lnum <= rows[index].end
+          call add(result, index + 1)
+          break
+        endif
+      endfor
+    endfor
+    return result
+  endfunction
+  function! s:CheckSearch(lines) abort
+    let options = [&ignorecase, &smartcase, &magic]
+    let previous = [@/, v:searchforward, v:hlsearch, winsaveview(), getjumplist(), win_getid()]
+    call assert_equal(len(a:lines), searchcount({'recompute': 1, 'maxcount': 0}).total,
+          \ 'Vim native search for ' .. @/)
+    call simpleminimap#OnCursorMoved(s:source_winid)
+    call assert_equal(s:SearchRowsAt(a:lines), s:Session().search_rows, 'projection for ' .. @/)
+    call assert_equal(previous, [@/, v:searchforward, v:hlsearch, winsaveview(), getjumplist(), win_getid()],
+          \ 'search projection does not move the cursor or overwrite search state')
+    call assert_equal(options, [&ignorecase, &smartcase, &magic])
+  endfunction
+  set ignorecase smartcase
+  for s:case in [
+        \ ['Foo', [40000]], ['foo', [3, 40000]],
+        \ ['Foo\c', [3, 40000]], ['foo\C', [3]],
+        \ ['foo\Z', [3, 40000]], ['Élan', [40000]],
+        \ ['\%#=1Foo', [40000]], ['\%#=2Foo', [40000]],
+        \ ]
+    execute "normal! /" .. s:case[0] .. "\<CR>"
+    call s:CheckSearch(s:case[1])
+  endfor
+  execute "normal! /Foo\<CR>"
+  call s:CheckSearch([40000])
+  set nosmartcase
+  " Startup (-S) suppresses OptionSet; explicitly exercise the production hook.
+  doautocmd OptionSet smartcase
+  call assert_equal(s:SearchRowsAt([3, 40000]), s:Session().search_rows, 'smartcase toggle refreshes in place')
+  set noignorecase
+  doautocmd OptionSet ignorecase
+  call assert_equal(s:SearchRowsAt([40000]), s:Session().search_rows, 'ignorecase toggle refreshes in place')
+  set ignorecase
+  call s:CheckSearch([3, 40000])
+  set smartcase
+  call s:CheckSearch([40000])
+  execute "normal! ?Foo\<CR>"
+  call assert_false(v:searchforward)
+  call s:CheckSearch([40000])
+  set noignorecase nosmartcase
+
   " Past the scan budget the projection reports itself incomplete rather than
   " silently under-reporting matches, and the statusline says so.
   call append(line('$'), map(range(1, 200000), '"filler " .. v:val'))
@@ -115,6 +170,13 @@ if exists('*matchbufline')
   call assert_match('\~', simpleminimap#Statusline(),
         \ 'the statusline marks an incomplete projection')
   unlet g:statusline_winid
+
+  set ignorecase smartcase
+  let @/ = 'ZZZ-NO-SUCH-TEXT-ZZZ'
+  call s:CheckSearch([])
+  call assert_true(s:Session().search_partial,
+        \ 'native smartcase scanning retains the same line budget')
+  set noignorecase nosmartcase
 
   let v:hlsearch = 0
   call simpleminimap#OnCursorMoved(s:source_winid)
