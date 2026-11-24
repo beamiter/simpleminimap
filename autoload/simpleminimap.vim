@@ -11,6 +11,8 @@ const RESTART_WINDOW_MS = 60000.0
 # nowhere in a multi-million-line buffer -- and marks the projection partial.
 const SEARCH_CHUNK_LINES = 400
 const SEARCH_MAX_SCAN_LINES = 200000
+const SEARCH_DEFER_MIN_LINES = 65536
+const SEARCH_CHUNKS_PER_TICK = 8
 # One minimap row covers many source lines, so several overlay entries -- from
 # several providers -- routinely land on the same row.  The highest priority
 # category wins it: an error and a git "add" on the same row is an error row.
@@ -1930,7 +1932,9 @@ def ClearMatches(key: string)
     DeleteMatch(key, field)
   endfor
   ClearSignMatches(key)
+  StopSearch(sessions[key])
   sessions[key].search_rows = []
+  sessions[key].search_partial = false
   sessions[key].search_state = []
 enddef
 
@@ -2283,40 +2287,125 @@ def UpdateOverlays(key: string)
 enddef
 
 
+def SearchEnabled(): bool
+  return exists('*matchbufline') && get(g:, 'simpleminimap_show_search', 1)
+    && OverlayEnabled('search')
+enddef
+
+
+def SearchState(session: dict<any>): list<any>
+  return SearchEnabled()
+    ? [v:hlsearch, @/, getbufvar(session.source_bufnr, 'changedtick', 0),
+        &ignorecase, &smartcase, &casemap, &encoding, &regexpengine, v:ctype,
+        session.source_bufnr, session.source_winid, session.winid]
+    : []
+enddef
+
+
+def StopSearch(session: dict<any>)
+  var job = get(session, 'search_job', {})
+  if get(job, 'timer', 0) > 0
+    timer_stop(job.timer)
+  endif
+  session.search_job = {}
+enddef
+
+
+def PublishSearch(key: string, marked: list<number>, partial: bool)
+  var session = sessions[key]
+  session.search_rows = marked
+  session.search_partial = partial
+  if !empty(marked)
+    session.search_match = matchaddpos('SimpleMinimapSearch', marked,
+      12, -1, {window: session.winid})
+  endif
+enddef
+
+
+def SearchBands(session: dict<any>): list<any>
+  return mapnew(session.rows, (_, row) => [row.start, row.end])
+enddef
+
+
+def SearchTick(key: string, timer: number)
+  if !has_key(sessions, key)
+    return
+  endif
+  var session = sessions[key]
+  var job = get(session, 'search_job', {})
+  if get(job, 'timer', 0) != timer
+    return
+  endif
+  if !WindowExists(session.winid)
+    StopSearch(session)
+    return
+  endif
+  if session.rows isnot job.rows || SearchState(session) !=# job.state
+    # Edits and a new search can arrive without a CursorMoved event. Do not
+    # publish any part of the obsolete job; refresh against the current state.
+    UpdateSearch(key, true)
+    return
+  endif
+  job.timer = 0
+  var result = NativeSearch(session, job.bands, job.resume, SEARCH_CHUNKS_PER_TICK)
+  job.marked->extend(result[0])
+  if empty(result[2])
+    StopSearch(session)
+    PublishSearch(key, job.marked, result[1])
+    redrawstatus
+  else
+    job.resume = result[2]
+    job.timer = timer_start(1, function(SearchTick, [key]))
+  endif
+enddef
+
+
 def UpdateSearch(key: string, force: bool = false)
   if !has_key(sessions, key)
     return
   endif
   var session = sessions[key]
-  var supported = exists('*matchbufline')
-  var enabled = supported && get(g:, 'simpleminimap_show_search', 1)
-    && OverlayEnabled('search')
-  var state: list<any> = enabled
-    ? [v:hlsearch, @/, getbufvar(session.source_bufnr, 'changedtick', 0),
-        &ignorecase, &smartcase]
-    : []
+  var state = SearchState(session)
   # [-1] is a sentinel that cannot be a real search state.
-  if !force && state ==# get(session, 'search_state', [-1])
-    return
+  if state ==# get(session, 'search_state', [-1])
+    if !force
+      return
+    endif
+    var job = get(session, 'search_job', {})
+    if !empty(job) && job.bands ==# SearchBands(session)
+      # Daemon repaints can replace the row dictionaries without changing
+      # what any row covers. Keep the pending search instead of starving it.
+      job.rows = session.rows
+      return
+    endif
   endif
+  StopSearch(session)
   session.search_state = state
   DeleteMatch(key, 'search_match')
   session.search_rows = []
   session.search_partial = false
-  if !enabled || !v:hlsearch || @/ ==# ''
+  if empty(state) || !v:hlsearch || @/ ==# ''
       || empty(session.rows)
       || !WindowExists(session.winid)
       || !bufexists(session.source_bufnr)
     return
   endif
+  # Slice only short lowercase literals using Vim's native Smartcase path.
+  # General Vim regexes can depend on mutable cursor/marks/window state across
+  # callbacks. Small buffers and other patterns keep their current behavior.
+  if &ignorecase && &smartcase && session.source_lines >= SEARCH_DEFER_MIN_LINES
+      && strlen(@/) <= 128 && @/ =~# '\m^[a-z0-9_-]\+$'
+    session.search_partial = true
+    session.search_job = {
+      state: state, rows: session.rows, bands: SearchBands(session),
+      resume: [0, 0, SEARCH_MAX_SCAN_LINES], marked: [],
+      timer: timer_start(1, function(SearchTick, [key])),
+    }
+    return
+  endif
 
   var projected = SearchRows(session, @/)
-  session.search_rows = projected[0]
-  session.search_partial = projected[1]
-  if !empty(session.search_rows)
-    session.search_match = matchaddpos('SimpleMinimapSearch', session.search_rows,
-      12, -1, {window: session.winid})
-  endif
+  PublishSearch(key, projected[0], projected[1])
 enddef
 
 
@@ -2330,21 +2419,7 @@ enddef
 # band's worth of matches either.  Returns [rows, partial].
 def SearchRows(session: dict<any>, pattern: string): list<any>
   if &ignorecase && &smartcase
-    var winid = get(session, 'source_winid', 0)
-    if !WindowExists(winid) || WindowInfo(winid).bufnr != session.source_bufnr
-      return [[], true]
-    endif
-    var bands: list<any> = []
-    for row in session.rows
-      bands->add([row.start, row.end])
-    endfor
-    try
-      var raw = win_execute(winid,
-        printf('echo json_encode(simpleminimap#SearchSmartcaseProbe(%s))', string(bands)))
-      return json_decode(trim(raw))
-    catch
-      return [[], true]
-    endtry
+    return NativeSearch(session, SearchBands(session), [0, 0, SEARCH_MAX_SCAN_LINES])
   endif
   var rows = session.rows
   var info = getbufinfo(session.source_bufnr)
@@ -2378,37 +2453,77 @@ def SearchRows(session: dict<any>, pattern: string): list<any>
 enddef
 
 
+def NativeSearch(session: dict<any>, bands: list<any>, resume: list<number>,
+    chunks: number = 0): list<any>
+  var winid = get(session, 'source_winid', 0)
+  if !WindowExists(winid) || get(WindowInfo(winid), 'bufnr', -1) != session.source_bufnr
+    return [[], true, []]
+  endif
+  try
+    var raw = win_execute(winid,
+      printf('echo json_encode(simpleminimap#SearchSmartcaseProbe(%s, %s, %d))',
+        string(bands), string(resume), chunks))
+    return json_decode(trim(raw))
+  catch
+    return [[], true, []]
+  endtry
+enddef
+
+
 # matchbufline() honors ignorecase and explicit \c/\C, but not smartcase.
 # Use Vim's own last search in its source window rather than guessing case
-# from ASCII letters (regex escapes and Unicode matter).
-export def SearchSmartcaseProbe(bands: list<any>): list<any>
+# from ASCII letters (regex escapes and Unicode matter). The optional cursor
+# and chunk count let a timer yield without revisiting any source lines.
+export def SearchSmartcaseProbe(bands: list<any>,
+    resume: list<number> = [], chunks: number = 0): list<any>
+  if empty(resume)
+    # Preserve the original one-argument helper's [marked, partial] return.
+    return AdvanceNativeSearch(bands, [0, 0, SEARCH_MAX_SCAN_LINES], 0)[0 : 1]
+  endif
+  return AdvanceNativeSearch(bands, resume, chunks)
+enddef
+
+
+def AdvanceNativeSearch(bands: list<any>, resume: list<number>, chunks: number): list<any>
   var view = winsaveview()
   var marked: list<number> = []
-  var budget = SEARCH_MAX_SCAN_LINES
+  var [index, line, budget] = resume
   var last_line = line('$')
+  var scanned = 0
   try
-    for index in range(len(bands))
-      var line = bands[index][0]
+    while index < len(bands)
+      if line == 0
+        line = bands[index][0]
+      endif
       var row_end = min([bands[index][1], last_line])
-      while line <= row_end
-        if budget <= 0
-          return [marked, true]
-        endif
-        var chunk_end = min([row_end, line + SEARCH_CHUNK_LINES - 1])
-        budget -= chunk_end - line + 1
-        cursor(line, 1)
-        var found = searchpos('', 'cnW', chunk_end)[0]
-        if found >= line && found <= chunk_end
-          marked->add(index + 1)
-          break
-        endif
+      if line > row_end
+        index += 1
+        line = 0
+        continue
+      endif
+      if budget <= 0
+        return [marked, true, []]
+      endif
+      if chunks > 0 && scanned >= chunks
+        return [marked, true, [index, line, budget]]
+      endif
+      var chunk_end = min([row_end, line + SEARCH_CHUNK_LINES - 1])
+      budget -= chunk_end - line + 1
+      scanned += 1
+      cursor(line, 1)
+      var found = searchpos('', 'cnW', chunk_end)[0]
+      if found >= line && found <= chunk_end
+        marked->add(index + 1)
+        index += 1
+        line = 0
+      else
         line = chunk_end + 1
-      endwhile
-    endfor
+      endif
+    endwhile
   finally
     winrestview(view)
   endtry
-  return [marked, false]
+  return [marked, false, []]
 enddef
 
 
@@ -3158,8 +3273,7 @@ export def Statusline(): string
   var last_render_ms = get(session, 'last_render_ms', -1.0)
   var timing = last_render_ms >= 0.0 ? printf(' · %.0fms', last_render_ms) : ''
   var pinned = get(session, 'pinned', false) ? ' · pinned' : ''
-  # The search projection gave up before every row was decided; say so rather
-  # than showing an overview that silently under-reports matches.
+  # A pending/capped search is not a complete view of the matches.
   var partial = get(session, 'search_partial', false) ? ' ~' : ''
   var position = ''
   var source_lines = get(session, 'source_lines', 0)
@@ -3972,6 +4086,7 @@ export def Stop()
       timer_stop(session.timer)
     endif
     StopRequestTimer(session)
+    StopSearch(session)
   endfor
   StopBackend(false)
   sessions = {}

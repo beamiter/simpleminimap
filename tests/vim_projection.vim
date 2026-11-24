@@ -176,6 +176,88 @@ if exists('*matchbufline')
   call s:CheckSearch([])
   call assert_true(s:Session().search_partial,
         \ 'native smartcase scanning retains the same line budget')
+
+  " Large native literal searches must yield to another Vim timer, and even
+  " a replacement without CursorMoved must retire the old partial projection.
+  call setline(12000, 'staleprobe')
+  call setline(130000, 'retainedprobe')
+  call setline(180000, 'replacementprobe')
+  let @/ = 'staleprobe'
+  let v:hlsearch = 1
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  call assert_equal([], s:Session().search_rows, 'do not publish on CursorMoved')
+  call assert_true(s:Session().search_partial, 'deferred projection is reported incomplete')
+  let s:cursor_state = [v:searchforward, winsaveview(), getjumplist(), win_getid()]
+  let s:initial_job = get(s:Session(), 'search_job', {})
+  call assert_equal([0, 0, 200000], get(s:initial_job, 'resume', []),
+        \ 'CursorMoved left the entire literal scan for later ticks')
+
+  " One production probe yields after at most 8 chunks of 400 lines.
+  " These first 3200 lines contain no staleprobe match.
+  call assert_equal([[1], v:false], simpleminimap#SearchSmartcaseProbe([[1, 15000]]),
+        \ 'preserve the synchronous probe helper shape')
+  if !empty(s:initial_job)
+    let s:bounded = simpleminimap#SearchSmartcaseProbe([[1, 15000]], [0, 0, 200000], 8)
+    call assert_equal([[], v:true, [0, 3201, 196800]], s:bounded)
+  endif
+
+  let s:timer_observation = []
+  function! s:ReplaceDuringScan(timer) abort
+    let job = get(s:Session(), 'search_job', {})
+    if get(job, 'resume', [0, 0, 200000])[2] == 200000
+      return
+    endif
+    let s:timer_observation = [job.resume, s:Session().search_rows]
+    " Change the native search and source without calling plugin hooks, as
+    " a different plugin's timer could. The next search tick must notice.
+    let @/ = 'replacementprobe'
+    let v:hlsearch = 1
+    call setline(160000, 'REPLACEMENTPROBE')
+    call timer_stop(a:timer)
+  endfunction
+  let s:replacement_timer = timer_start(1, function('s:ReplaceDuringScan'), {'repeat': -1})
+  let s:attempt = 0
+  while (empty(s:timer_observation) || !empty(get(s:Session(), 'search_job', {}))) && s:attempt < 300
+    sleep 10m
+    let s:attempt += 1
+  endwhile
+  call timer_stop(s:replacement_timer)
+  call assert_false(empty(s:timer_observation), 'another Vim timer ran during a genuinely started scan')
+  if !empty(s:timer_observation)
+    call assert_equal([], s:timer_observation[1], 'in-flight results never appear')
+  endif
+  call assert_equal(2, searchcount({'recompute': 1, 'maxcount': 0}).total,
+        \ 'native result after direct pattern and buffer replacement')
+  call assert_equal(s:SearchRowsAt([160000, 180000]), s:Session().search_rows,
+        \ 'only the replacement rows publish after the obsolete generation is canceled')
+  call assert_true(s:Session().search_partial, 'the line cap still reports incomplete coverage')
+  call assert_equal(s:cursor_state, [v:searchforward, winsaveview(), getjumplist(), win_getid()],
+        \ 'timer slices leave the original window, view, jump list and search direction alone')
+  call assert_equal({}, get(s:Session(), 'search_job', {}), 'completed job no longer owns a timer')
+
+  let @/ = 'retainedprobe'
+  let v:hlsearch = 1
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  let s:stopped_timer = get(get(s:Session(), 'search_job', {}), 'timer', -1)
+  call assert_true(s:stopped_timer > 0, 'next query actually scheduled')
+  for s:repeat in range(1, 12)
+    call simpleminimap#OnCursorMoved(s:source_winid)
+  endfor
+  call assert_equal(s:stopped_timer, get(get(s:Session(), 'search_job', {}), 'timer', -2),
+        \ 'repeated CursorMoved on the same query leaves its pending slice alone')
+  let s:old_cmp = &casemap
+  let &casemap = s:old_cmp ==# 'internal' ? 'internal,keepascii' : 'internal'
+  doautocmd OptionSet casemap
+  call assert_equal([], timer_info(s:stopped_timer), 'case mapping changes retire the old query')
+  let s:stopped_timer = get(get(s:Session(), 'search_job', {}), 'timer', -1)
+  call assert_true(s:stopped_timer > 0, 'case mapping change scheduled current query')
+  let v:hlsearch = 0
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  sleep 20m
+  call assert_equal([], timer_info(s:stopped_timer), 'nohlsearch stopped the outstanding timer')
+  call assert_equal([], s:Session().search_rows, 'old timer could not republish after nohlsearch')
+  call assert_equal({}, get(s:Session(), 'search_job', {}), 'no pending search after nohlsearch')
+  let &casemap = s:old_cmp
   set noignorecase nosmartcase
 
   let v:hlsearch = 0
@@ -220,7 +302,42 @@ call assert_equal(s:expected, s:session.sign_rows,
 
 call sign_unplace('SimpleMinimapProjTests', {'buffer': s:source_bufnr})
 call sign_undefine('SimpleMinimapProjTest')
-SimpleMinimapClose
+if exists('*matchbufline') && !empty(s:initial_job)
+  set ignorecase smartcase hlsearch
+  let @/ = 'retainedprobe'
+  let v:hlsearch = 1
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  let s:source_view = win_execute(s:source_winid, 'echo string(winsaveview())')
+  tabnew
+  call setline(1, ['other tab', 'unrelated'])
+  call cursor(2, 3)
+  let s:front_state = [tabpagenr(), win_getid(), winsaveview(), getjumplist(), @/]
+  let s:attempt = 0
+  while !empty(get(s:Session(), 'search_job', {})) && s:attempt < 300
+    sleep 10m
+    let s:attempt += 1
+  endwhile
+  call assert_equal(s:SearchRowsAt([130000]), s:Session().search_rows,
+        \ 'native search finished against the background source, not the foreground tab')
+  call assert_equal(s:front_state, [tabpagenr(), win_getid(), winsaveview(), getjumplist(), @/],
+        \ 'background projection never steals the foreground tab, window or view')
+  call assert_equal(s:source_view, win_execute(s:source_winid, 'echo string(winsaveview())'),
+        \ 'each slice restores the actual background source view')
+  setlocal nomodified
+  tabclose
+
+  let @/ = 'replacementprobe'
+  let v:hlsearch = 1
+  call simpleminimap#OnCursorMoved(s:source_winid)
+  let s:closing_timer = get(get(s:Session(), 'search_job', {}), 'timer', -1)
+  call assert_true(s:closing_timer > 0, 'closing a minimap with a queued slice')
+  SimpleMinimapClose
+  sleep 20m
+  call assert_equal([], timer_info(s:closing_timer), 'closing the minimap stops its search timer')
+  call assert_equal({}, simpleminimap#DebugStatus().sessions, 'no stale work recreated the session')
+else
+  SimpleMinimapClose
+endif
 call simpleminimap#Stop()
 
 if len(v:errors)

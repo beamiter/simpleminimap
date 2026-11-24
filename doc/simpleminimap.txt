@@ -328,6 +328,9 @@ All options must be set before the plugin is loaded.
         matches nowhere in a buffer of several million lines exhausts the scan
         budget instead: the rows decided so far are shown and the statusline
         gains a "~" marker to say the overview is incomplete.
+        With 'ignorecase' and 'smartcase', simple lowercase ASCII searches
+        on large buffers scan in short timer slices. The same marker appears
+        while that projection is pending; only the current search publishes.
 
 *g:simpleminimap_incremental*
         Boolean number, default 1.  Cache each band's sampled text and let a

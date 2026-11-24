@@ -189,6 +189,6 @@ augroup SimpleMinimap
   if exists('##OptionSet')
     autocmd OptionSet tabstop try | call simpleminimap#OnTextChanged(bufnr()) | catch | endtry
     autocmd OptionSet filetype,buftype try | call simpleminimap#OnContextChanged() | catch | endtry
-    autocmd OptionSet ignorecase,smartcase try | call simpleminimap#OnSearchOptionsChanged() | catch | endtry
+    autocmd OptionSet ignorecase,smartcase,casemap,encoding,regexpengine try | call simpleminimap#OnSearchOptionsChanged() | catch | endtry
   endif
 augroup END
